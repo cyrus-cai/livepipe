@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "id": "livepipe",
-  "source": "https://github.com/xiikii/livepipe",
+  "source": "https://github.com/cyrus-cai/livepipe",
   "crons": [
     {
       "path": "/api/start",

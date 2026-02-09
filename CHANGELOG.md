@@ -95,7 +95,7 @@ If you were using the old `screenpipe-action-pipe`:
 
 2. Install new version:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/xiikii/livepipe/main/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/cyrus-cai/livepipe/main/install.sh | bash
    ```
 
 3. Start new version:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # LivePipe Installation Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/xiikii/livepipe/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/cyrus-cai/livepipe/main/install.sh | bash
 
 set -e
 
@@ -40,12 +40,12 @@ if [ -n "$LIVEPIPE_LOCAL_PATH" ]; then
     cp -r "$LIVEPIPE_LOCAL_PATH" "$INSTALL_DIR"
     echo -e "${GREEN}✓${NC} Project copied from local path\n"
 elif command -v git &> /dev/null; then
-    git clone https://github.com/xiikii/livepipe.git "$INSTALL_DIR"
+    git clone https://github.com/cyrus-cai/livepipe.git "$INSTALL_DIR"
     echo -e "${GREEN}✓${NC} Project downloaded\n"
 else
     echo -e "${YELLOW}⚠  Git not found, downloading tarball...${NC}"
     mkdir -p "$INSTALL_DIR"
-    curl -fsSL https://github.com/xiikii/livepipe/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1 -C "$INSTALL_DIR"
+    curl -fsSL https://github.com/cyrus-cai/livepipe/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1 -C "$INSTALL_DIR"
     echo -e "${GREEN}✓${NC} Project downloaded\n"
 fi
 

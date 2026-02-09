@@ -13,16 +13,49 @@
 
 - [ ] 与 OpenClaw 协同审查识别到的屏幕内容，确认是否输出。
 
-## 系统要求
+## 开始使用
+
+### 环境依赖
 
 - **macOS**
-- 已安装 [Bun](https://bun.sh/)
-- 已本地安装 [Ollama](https://ollama.com/)（默认模型：`qwen3:1.7b`）
-- 已安装 [Screenpipe CLI](https://github.com/mediar-ai/screenpipe)
-- 可用 [PM2](https://pm2.keymetrics.io/)（`scripts/dev.ts` 用它管理 Screenpipe/Ollama）
-- 需为终端应用授予：
-  - 屏幕录制权限（系统设置 -> 隐私与安全性 -> 屏幕录制）
-  - 通知权限（系统设置 -> 通知）
+- [Bun](https://bun.sh/)
+- [Ollama](https://ollama.com/)（默认模型：`qwen3:1.7b`）
+- [Screenpipe CLI](https://github.com/mediar-ai/screenpipe)
+- [PM2](https://pm2.keymetrics.io/)（`bun install -g pm2`）
+
+### 安装
+
+```bash
+git clone https://github.com/cyrus-cai/livepipe.git
+cd livepipe
+bun install
+
+# 拉取默认 LLM 模型
+ollama pull qwen3:1.7b
+
+# 复制配置模板
+cp config.template.json config.json
+```
+
+### 运行
+
+```bash
+# 启动开发模式（通过 PM2 自动管理 Screenpipe + Ollama）
+bun run dev
+```
+
+dev 脚本会：
+1. 检查 Screenpipe、Ollama、PM2 是否已安装
+2. 通过 PM2 启动 Screenpipe 和 Ollama
+3. 在 `http://localhost:3060` 启动 Next.js 开发服务器
+4. 开始轮询屏幕内容并发送通知
+
+### macOS 权限
+
+在 **系统设置 -> 隐私与安全性** 中为终端应用授予以下权限：
+
+- **屏幕录制** — Screenpipe 捕获屏幕内容所需
+- **通知** — 桌面通知所需
 
 ## 通知通道
 
