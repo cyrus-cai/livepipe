@@ -16,5 +16,9 @@
   "app": {
     "pollInterval": 35000,
     "lookbackMs": 60000
+  },
+  "capture": {
+    "mode": "always",
+    "hotkeyHoldMs": 500
   }
 }

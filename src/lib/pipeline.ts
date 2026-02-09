@@ -17,10 +17,17 @@ const LOG_DIR = join(process.cwd(), "logs");
 const LOG_FILE = join(LOG_DIR, "screenpipe-raw.jsonl");
 const CONFIG_FILE = join(process.cwd(), "pipe.json");
 
+export type CaptureMode = "always" | "hotkey" | "both";
+
 interface FilterConfig {
   allowedApps: string[];
   blockedWindows: string[];
   minTextLength: number;
+}
+
+interface CaptureConfig {
+  mode: CaptureMode;
+  hotkeyHoldMs: number;
 }
 
 function loadFilterConfig(): FilterConfig {
@@ -38,6 +45,19 @@ function loadFilterConfig(): FilterConfig {
     return defaults;
   }
 }
+
+function loadCaptureConfig(): CaptureConfig {
+  const defaults: CaptureConfig = { mode: "always", hotkeyHoldMs: 500 };
+  try {
+    const raw = readFileSync(CONFIG_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...defaults, ...parsed.capture };
+  } catch {
+    return defaults;
+  }
+}
+
+const captureConfig = loadCaptureConfig();
 
 const filterConfig = loadFilterConfig();
 
@@ -181,6 +201,139 @@ async function detectScreenpipeInterval(): Promise<number> {
   }
 }
 
+/**
+ * Fetch OCR data, filter, and return texts+apps. Shared by polling loop and triggerOnce.
+ */
+async function fetchAndFilter(lookbackMs: number): Promise<{ texts: string[]; apps: Set<string> } | null> {
+  const now = Date.now();
+  const startTime = new Date(now - lookbackMs).toISOString();
+  const endTime = new Date(now).toISOString();
+
+  const query = {
+    contentType: "ocr" as const,
+    limit: 10,
+    startTime,
+    endTime,
+  };
+  console.log(`[query] pipe.queryScreenpipe(${JSON.stringify(query, null, 2)})`);
+
+  const result = await pipe.queryScreenpipe(query);
+
+  console.log(`[query] response: ${result?.data?.length ?? 0} items, pagination=${JSON.stringify(result?.pagination)}`);
+
+  appendLog({ query, response: result });
+
+  if (!result?.data?.length) {
+    return null;
+  }
+
+  const candidates: { text: string; app: string }[] = [];
+  let skippedApp = 0, skippedWindow = 0, skippedShort = 0;
+
+  for (const item of result.data) {
+    if (item.type !== "OCR") continue;
+    const text = item.content.text;
+    const app = item.content.appName ?? "unknown";
+    const windowName = item.content.windowName ?? "";
+
+    if (!text) continue;
+
+    if (!isAppAllowed(app)) { skippedApp++; continue; }
+    if (isWindowBlocked(windowName)) { skippedWindow++; continue; }
+    if (text.length < filterConfig.minTextLength) { skippedShort++; continue; }
+
+    candidates.push({ text, app });
+  }
+
+  const unique = deduplicateTexts(candidates);
+  const texts = unique.map(e => e.text);
+  const apps = new Set(unique.map(e => e.app));
+
+  console.log(`[poll] fetched ${result.data.length} items → ${texts.length} kept (app:−${skippedApp} window:−${skippedWindow} short:−${skippedShort} dedup:−${candidates.length - unique.length}), apps=[${[...apps].join(", ")}]`);
+
+  if (texts.length === 0) return null;
+  return { texts, apps };
+}
+
+/**
+ * One-shot capture + intent detection, called by /api/trigger (hotkey mode).
+ * Grabs the latest Screenpipe OCR frame directly — no time window needed.
+ */
+export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any }> {
+  console.log("[trigger] hotkey-triggered capture starting...");
+
+  try {
+    // Grab the most recent OCR data — Screenpipe runs at 0.5 FPS so there's always a recent frame
+    const query = {
+      contentType: "ocr" as const,
+      limit: 5,
+      startTime: new Date(Date.now() - 300_000).toISOString(), // last 5 min as safety net
+      endTime: new Date().toISOString(),
+    };
+    console.log(`[trigger] querying latest OCR frames...`);
+    const result = await pipe.queryScreenpipe(query);
+
+    if (!result?.data?.length) {
+      console.log("[trigger] no OCR data available from Screenpipe");
+      return { triggered: false };
+    }
+
+    // Filter and deduplicate
+    const candidates: { text: string; app: string }[] = [];
+    for (const item of result.data) {
+      if (item.type !== "OCR") continue;
+      const text = item.content.text;
+      const app = item.content.appName ?? "unknown";
+      const windowName = item.content.windowName ?? "";
+      if (!text || text.length < filterConfig.minTextLength) continue;
+      if (!isAppAllowed(app)) continue;
+      if (isWindowBlocked(windowName)) continue;
+      candidates.push({ text, app });
+    }
+
+    const unique = deduplicateTexts(candidates);
+    if (unique.length === 0) {
+      console.log(`[trigger] ${result.data.length} frames fetched but all filtered out`);
+      return { triggered: false };
+    }
+
+    const texts = unique.map(e => e.text);
+    const apps = new Set(unique.map(e => e.app));
+    console.log(`[trigger] got ${texts.length} texts from [${[...apps].join(", ")}]`);
+
+    const batch = {
+      texts,
+      apps,
+      startTime: Date.now(),
+      endTime: Date.now(),
+    };
+
+    const intent = await detectIntent(batch, { hotkeyTriggered: true });
+
+    if (!intent) {
+      console.log("[trigger] intent detection returned null");
+      return { triggered: true };
+    }
+
+    if (!intent.actionable) {
+      console.log("[trigger] not actionable");
+      return { triggered: true, intent };
+    }
+
+    if (shouldNotify(intent)) {
+      console.log(`[trigger] ACTIONABLE: type=${intent.type}, content="${intent.content}", due=${intent.due_time}`);
+      await sendNotification(intent);
+    } else {
+      console.log("[trigger] duplicate, skipped");
+    }
+
+    return { triggered: true, intent };
+  } catch (error) {
+    console.error("[trigger] error:", error);
+    return { triggered: false };
+  }
+}
+
 async function runPipeline() {
   if (isRunning) {
     console.log("[pipeline] already running, skipping");
@@ -188,6 +341,15 @@ async function runPipeline() {
   }
 
   isRunning = true;
+
+  console.log(`[pipeline] capture mode: ${captureConfig.mode}`);
+
+  // In hotkey-only mode, don't start the polling loop
+  if (captureConfig.mode === "hotkey") {
+    console.log("[pipeline] hotkey-only mode — polling disabled, waiting for /api/trigger");
+    // Keep isRunning true so the pipeline is considered "active"
+    return;
+  }
 
   const detectedInterval = await detectScreenpipeInterval();
   POLL_INTERVAL_MS = detectedInterval + 5000;
@@ -198,26 +360,10 @@ async function runPipeline() {
 
   try {
     while (true) {
-      const now = Date.now();
-      const startTime = new Date(now - LOOKBACK_MS).toISOString();
-      const endTime = new Date(now).toISOString();
-
       try {
-        const query = {
-          contentType: "ocr" as const,
-          limit: 10,
-          startTime,
-          endTime,
-        };
-        console.log(`[query] pipe.queryScreenpipe(${JSON.stringify(query, null, 2)})`);
-        
-        const result = await pipe.queryScreenpipe(query);
-        
-        console.log(`[query] response: ${result?.data?.length ?? 0} items, pagination=${JSON.stringify(result?.pagination)}`);
-        
-        appendLog({ query, response: result });
+        const data = await fetchAndFilter(LOOKBACK_MS);
 
-        if (!result?.data?.length) {
+        if (!data) {
           noDataCount++;
           console.log(`[poll] no OCR data in last ${LOOKBACK_MS / 1000}s (×${noDataCount})`);
           await sleep(POLL_INTERVAL_MS);
@@ -226,32 +372,7 @@ async function runPipeline() {
 
         noDataCount = 0;
 
-        // Pre-filter OCR items
-        const candidates: { text: string; app: string }[] = [];
-        let skippedApp = 0, skippedWindow = 0, skippedShort = 0;
-
-        for (const item of result.data) {
-          if (item.type !== "OCR") continue;
-          const text = item.content.text;
-          const app = item.content.appName ?? "unknown";
-          const windowName = item.content.windowName ?? "";
-
-          if (!text) continue;
-
-          if (!isAppAllowed(app)) { skippedApp++; continue; }
-          if (isWindowBlocked(windowName)) { skippedWindow++; continue; }
-          if (text.length < filterConfig.minTextLength) { skippedShort++; continue; }
-
-          candidates.push({ text, app });
-        }
-
-        const unique = deduplicateTexts(candidates);
-        const texts = unique.map(e => e.text);
-        const apps = new Set(unique.map(e => e.app));
-
-        console.log(`[poll] fetched ${result.data.length} items → ${texts.length} kept (app:−${skippedApp} window:−${skippedWindow} short:−${skippedShort} dedup:−${candidates.length - unique.length}), apps=[${[...apps].join(", ")}]`);
-
-        const combined = texts.join("\n");
+        const combined = data.texts.join("\n");
 
         // First poll: just set baseline, don't process stale screenpipe data
         if (isFirstPoll) {
@@ -270,10 +391,10 @@ async function runPipeline() {
         }
 
         const batch = {
-          texts,
-          apps,
-          startTime: now,
-          endTime: now,
+          texts: data.texts,
+          apps: data.apps,
+          startTime: Date.now(),
+          endTime: Date.now(),
         };
 
         const intent = await detectIntent(batch);

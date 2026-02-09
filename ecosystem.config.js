@@ -41,5 +41,16 @@ module.exports = {
         NODE_ENV: "development",
       },
     },
+    {
+      name: "livepipe-helper",
+      script: process.env.HOME + "/.livepipe/bin/livepipe-helper",
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: "5s",
+      restart_delay: 3000,
+      error_file: "~/.pm2/logs/livepipe-helper-error.log",
+      out_file: "~/.pm2/logs/livepipe-helper-out.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+    },
   ],
 };

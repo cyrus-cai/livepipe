@@ -39,6 +39,10 @@
     ],
     "minTextLength": 20
   },
+  "capture": {
+    "mode": "always",
+    "hotkeyHoldMs": 500
+  },
   "notification": {
     "desktop": true,
     "webhooks": [

@@ -35,6 +35,7 @@ ollama pull qwen3:1.7b
 
 # 复制配置模板
 cp config.template.json config.json
+cp pipe.template.json pipe.json
 ```
 
 ### 运行

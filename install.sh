@@ -145,6 +145,26 @@ else
     exit 1
 fi
 
+# Build Swift Helper
+echo ""
+echo -e "${CYAN}🔨 Building Swift Helper...${NC}"
+if command -v swift &> /dev/null; then
+    cd "$INSTALL_DIR/swift-helper"
+    swift build -c release 2>&1
+    if [ $? -eq 0 ]; then
+        # Copy binary to bin directory
+        mkdir -p "$INSTALL_DIR/bin"
+        cp "$(swift build -c release --show-bin-path)/livepipe-helper" "$INSTALL_DIR/bin/livepipe-helper"
+        echo -e "${GREEN}✓${NC} Swift Helper built successfully"
+    else
+        echo -e "${YELLOW}⚠${NC} Swift Helper build failed (hotkey mode will not be available)"
+    fi
+    cd "$INSTALL_DIR"
+else
+    echo -e "${YELLOW}⚠${NC} Swift toolchain not found — skipping helper build"
+    echo -e "${YELLOW}→${NC} Hotkey mode requires Xcode Command Line Tools: xcode-select --install"
+fi
+
 # Pull Ollama model
 if command -v ollama &> /dev/null; then
     echo ""
@@ -243,6 +263,9 @@ echo -e "Screenpipe requires ${CYAN}Screen Recording${NC} permission:"
 echo "  1. Open System Settings"
 echo "  2. Privacy & Security → Screen Recording"
 echo "  3. Enable 'screenpipe' (start it first if not in list)"
+echo ""
+echo -e "For hotkey mode, livepipe-helper requires ${CYAN}Accessibility${NC} permission:"
+echo "  Privacy & Security → Accessibility → enable 'livepipe-helper'"
 echo ""
 echo -e "For notifications to work, enable for your Terminal app:"
 echo "  Privacy & Security → Notifications → Terminal (or iTerm/etc.)"

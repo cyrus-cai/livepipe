@@ -33,8 +33,9 @@ bun install
 # Pull the default LLM model
 ollama pull qwen3:1.7b
 
-# Copy config template
+# Copy config templates
 cp config.template.json config.json
+cp pipe.template.json pipe.json
 ```
 
 ### Run

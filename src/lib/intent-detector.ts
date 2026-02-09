@@ -18,8 +18,53 @@ Actionable (true) — look for these patterns even if surrounded by noise:
 
 IMPORTANT: The text contains lots of noise. A single actionable phrase among noise = actionable. Scan the ENTIRE text carefully.
 
+CRITICAL rules for "content" field:
+- Write a COMPLETE, well-organized sentence in Chinese with full context
+- The sentence must be self-explanatory without requiring the user to see the original screen
+- Include WHO (if mentioned), WHAT (the action), WHEN (if time-sensitive), and WHY (if context helps)
+- Use natural, flowing language with proper grammar — NOT fragmented phrases or keywords
+- Examples of GOOD content:
+  * "下午3点需要参加团队周会" (not just "3点开会")
+  * "记得今天下班前完成项目报告的初稿" (not just "完成报告")
+  * "明天上午提醒自己去超市买牛奶和鸡蛋" (not just "买牛奶")
+  * "客户要求本周五之前提交设计方案的修改版本" (not just "提交方案")
+- Do NOT copy raw screen text, UI elements, file paths, or code
+- Do NOT use fragmented keywords or phrases without proper sentence structure
+- If you cannot form a complete, contextual sentence, set actionable to false
+
 Respond ONLY with JSON, no other text:
 {"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "time or null"}`;
+
+const HOTKEY_SYSTEM_PROMPT = `You analyze screen text captured when the user explicitly pressed a hotkey, meaning they WANT you to find actionable content. Be MORE lenient — the user is actively requesting analysis, so lower your threshold for "actionable".
+
+Mark as actionable (true) if there is ANY hint of:
+- Tasks, todos, reminders, appointments, deadlines
+- Messages that might need a reply
+- Content the user might want to remember or act on
+- Shopping lists, notes, calendar items
+- Any text that describes something to DO, BUY, SEND, READ, CHECK, or ATTEND
+
+Only mark as NOT actionable if the screen contains absolutely nothing useful — pure code, empty UI, or completely irrelevant content.
+
+CRITICAL rules for "content" field:
+- Write a COMPLETE, well-organized sentence in Chinese with full context
+- The sentence must be self-explanatory without requiring the user to see the original screen
+- Include WHO (if mentioned), WHAT (the action), WHEN (if time-sensitive), and WHY (if context helps)
+- Use natural, flowing language with proper grammar — NOT fragmented phrases or keywords
+- Examples of GOOD content:
+  * "下午3点需要参加团队周会" (not just "3点开会")
+  * "记得今天下班前完成项目报告的初稿" (not just "完成报告")
+  * "明天上午提醒自己去超市买牛奶和鸡蛋" (not just "买牛奶")
+- Do NOT copy raw screen text, UI elements, file paths, or code
+- Do NOT use fragmented keywords or phrases without proper sentence structure
+- If you truly cannot find anything meaningful, set actionable to false
+
+Respond ONLY with JSON, no other text:
+{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "time or null"}`;
+
+export interface DetectOptions {
+  hotkeyTriggered?: boolean;
+}
 
 function isGarbled(text: string): boolean {
   if (!text || text.length < 2) return true;
@@ -103,8 +148,10 @@ function extractJson(text: string): IntentResult | null {
 }
 
 export async function detectIntent(
-  batch: Batch
+  batch: Batch,
+  options?: DetectOptions
 ): Promise<IntentResult | null> {
+  const hotkeyTriggered = options?.hotkeyTriggered ?? false;
   const appsStr = [...batch.apps].join(", ");
   const cleanedText = cleanOcrText(batch.texts);
 
@@ -113,6 +160,8 @@ export async function detectIntent(
     return null;
   }
 
+  const systemPrompt = hotkeyTriggered ? HOTKEY_SYSTEM_PROMPT : SYSTEM_PROMPT;
+
   const userPrompt = `Screen text from [${appsStr}]:
 ${cleanedText}
 
@@ -120,7 +169,7 @@ JSON:`;
 
   try {
     console.log(
-      `[intent] analyzing ${cleanedText.length} chars from [${appsStr}]`
+      `[intent] analyzing ${cleanedText.length} chars from [${appsStr}]${hotkeyTriggered ? " (hotkey mode)" : ""}`
     );
     console.log(`[intent] cleaned text sample: "${cleanedText.substring(0, 200)}${cleanedText.length > 200 ? "..." : ""}"`);
 
@@ -131,7 +180,7 @@ JSON:`;
       body: JSON.stringify({
         model: DEFAULT_OLLAMA_MODEL,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         stream: false,
