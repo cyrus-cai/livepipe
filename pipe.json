@@ -1,0 +1,58 @@
+{
+  "enabled": true,
+  "id": "livepipe",
+  "source": "https://github.com/xiikii/livepipe",
+  "crons": [
+    {
+      "path": "/api/start",
+      "schedule": "*/1 * * * *"
+    }
+  ],
+  "filter": {
+    "allowedApps": [
+      "Notes",
+      "Reminders",
+      "WeChat",
+      "Messages",
+      "Telegram",
+      "Calendar",
+      "Mail",
+      "Slack",
+      "Notion",
+      "Obsidian",
+      "Things",
+      "Todoist",
+      "TickTick",
+      "Google Chrome",
+      "Safari",
+      "Arc",
+      "Firefox",
+      "Microsoft Edge",
+      "Feishu",
+      "DingTalk",
+      "Wallpaper"
+    ],
+    "blockedWindows": [
+      "livepipe",
+      "opencode",
+      "screenpipe"
+    ],
+    "minTextLength": 20
+  },
+  "notification": {
+    "desktop": true,
+    "webhooks": [
+      {
+        "enabled": true,
+        "provider": "feishu",
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_FEISHU_WEBHOOK_TOKEN"
+      },
+      {
+        "enabled": false,
+        "provider": "telegram",
+        "url": "https://api.telegram.org/bot<token>/sendMessage",
+        "chatId": "<chat-id>"
+      }
+    ]
+  }
+}

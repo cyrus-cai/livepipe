@@ -1,0 +1,61 @@
+#!/bin/bash
+# LivePipe CLI entry point
+# This script checks for Bun and then delegates to the TypeScript implementation
+
+set -e
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Check if Bun is installed
+if ! command -v bun &> /dev/null; then
+    echo -e "${RED}✗${NC} Bun not found"
+    echo ""
+    echo "LivePipe requires Bun to run."
+    echo ""
+    echo -e "${YELLOW}→${NC} Install Bun:"
+    echo "  curl -fsSL https://bun.sh/install | bash"
+    echo ""
+    read -p "Install Bun now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        curl -fsSL https://bun.sh/install | bash
+
+        # Source the shell config to get Bun in PATH
+        if [ -f "$HOME/.bashrc" ]; then
+            source "$HOME/.bashrc"
+        elif [ -f "$HOME/.zshrc" ]; then
+            source "$HOME/.zshrc"
+        fi
+
+        # Add to current session PATH
+        export PATH="$HOME/.bun/bin:$PATH"
+
+        if command -v bun &> /dev/null; then
+            echo -e "${GREEN}✓${NC} Bun installed successfully"
+        else
+            echo -e "${RED}✗${NC} Bun installation failed. Please install manually and try again."
+            exit 1
+        fi
+    else
+        echo "Installation cancelled."
+        exit 1
+    fi
+fi
+
+# Get the directory where this script is located (resolve symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+# Resolve $SOURCE until the file is no longer a symlink
+while [ -L "$SOURCE" ]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  # If $SOURCE was a relative symlink, resolve it relative to the symlink location
+  [[ $SOURCE != /* ]] && SOURCE="$SCRIPT_DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# Run the TypeScript CLI
+exec bun run "$SCRIPT_DIR/live.ts" "$@"
