@@ -1,6 +1,6 @@
 import { pipe } from "@screenpipe/js";
 import { detectIntent } from "@/lib/intent-detector";
-import { shouldNotify } from "@/lib/deduplication";
+import { shouldNotify, loadTasksFromFile } from "@/lib/deduplication";
 import { sendNotification } from "@/lib/notifier";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
@@ -67,6 +67,7 @@ const blockedWindowsLower = filterConfig.blockedWindows.map(w => w.toLowerCase()
 
 function isAppAllowed(appName: string): boolean {
   if (allowedAppsLower.size === 0) return true; // no whitelist = allow all
+  if (!appName || appName.toLowerCase() === "unknown") return true; // unknown app = allow
   return allowedAppsLower.has(appName.toLowerCase());
 }
 
@@ -429,6 +430,7 @@ export function startPipeline() {
     return;
   }
   console.log("[auto-start] Starting pipeline...");
+  loadTasksFromFile();
   runPipeline().catch((err) =>
     console.error("[pipeline] unhandled error:", err)
   );

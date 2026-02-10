@@ -49,6 +49,7 @@ test-pipeline.mjs
 # LivePipe runtime config (user-specific)
 config.json
 pipe.json
+tasks.md
 
 # Swift helper build artifacts
 swift-helper/
