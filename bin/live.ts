@@ -13,6 +13,85 @@ const LIVEPIPE_DIR = join(HOME, ".livepipe");
 const CONFIG_FILE = join(LIVEPIPE_DIR, "config.json");
 const CONFIG_TEMPLATE = join(LIVEPIPE_DIR, "config.template.json");
 
+type ScreenpipeStartupConfig = {
+  realtimeVision: boolean;
+  adaptiveFps: boolean;
+  useAllMonitors: boolean;
+  disableAudio: boolean;
+  usePiiRemoval: boolean;
+  enableUiEvents: boolean;
+  disableVision: boolean;
+  captureUnfocusedWindows: boolean;
+  enableRealtimeAudioTranscription: boolean;
+};
+
+const DEFAULT_SCREENPIPE_STARTUP: ScreenpipeStartupConfig = {
+  realtimeVision: true,
+  adaptiveFps: true,
+  useAllMonitors: true,
+  disableAudio: true,
+  usePiiRemoval: true,
+  enableUiEvents: true,
+  disableVision: false,
+  captureUnfocusedWindows: false,
+  enableRealtimeAudioTranscription: false,
+};
+
+function normalizeConfig(config: any): any {
+  const parsed = config ?? {};
+  return {
+    version: parsed.version ?? "1.0.0",
+    ports: {
+      app: Number(parsed?.ports?.app) || 3060,
+      ollama: Number(parsed?.ports?.ollama) || 11434,
+      screenpipe: Number(parsed?.ports?.screenpipe) || 3030,
+    },
+    ollama: {
+      model: parsed?.ollama?.model ?? "qwen3:1.7b",
+      managed: parsed?.ollama?.managed ?? false,
+    },
+    screenpipe: {
+      monitors: parsed?.screenpipe?.monitors ?? "all",
+      interval: Number(parsed?.screenpipe?.interval) || 30000,
+      startup: {
+        ...DEFAULT_SCREENPIPE_STARTUP,
+        ...(parsed?.screenpipe?.startup ?? {}),
+      },
+    },
+    app: {
+      pollInterval: Number(parsed?.app?.pollInterval) || 35000,
+      lookbackMs: Number(parsed?.app?.lookbackMs) || 60000,
+    },
+    capture: {
+      mode: parsed?.capture?.mode ?? "always",
+      hotkeyHoldMs: Number(parsed?.capture?.hotkeyHoldMs) || 500,
+    },
+  };
+}
+
+function createDefaultConfig() {
+  return normalizeConfig({});
+}
+
+function buildScreenpipeArgsFromConfig(config: any): string[] {
+  const startup: ScreenpipeStartupConfig = {
+    ...DEFAULT_SCREENPIPE_STARTUP,
+    ...(config?.screenpipe?.startup ?? {}),
+  };
+
+  const args: string[] = [];
+  if (startup.realtimeVision) args.push("--enable-realtime-vision");
+  if (startup.adaptiveFps) args.push("--adaptive-fps");
+  if (startup.useAllMonitors) args.push("--use-all-monitors");
+  if (startup.disableAudio) args.push("--disable-audio");
+  if (startup.usePiiRemoval) args.push("--use-pii-removal");
+  if (startup.enableUiEvents) args.push("--enable-ui-events");
+  if (startup.disableVision) args.push("--disable-vision");
+  if (startup.captureUnfocusedWindows) args.push("--capture-unfocused-windows");
+  if (startup.enableRealtimeAudioTranscription) args.push("--enable-realtime-audio-transcription");
+  return args;
+}
+
 // Color helpers
 const colors = {
   reset: "\x1b[0m",
@@ -71,11 +150,11 @@ function loadConfig(): any {
     if (existsSync(CONFIG_TEMPLATE)) {
       const template = readFileSync(CONFIG_TEMPLATE, "utf-8");
       writeFileSync(CONFIG_FILE, template);
-      return JSON.parse(template);
+      return normalizeConfig(JSON.parse(template));
     }
     return null;
   }
-  return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+  return normalizeConfig(JSON.parse(readFileSync(CONFIG_FILE, "utf-8")));
 }
 
 function saveConfig(config: any) {
@@ -144,7 +223,7 @@ async function checkScreenpipeData(): Promise<boolean> {
       startTime: new Date(Date.now() - 60000).toISOString(),
       endTime: new Date().toISOString(),
     });
-    return result?.data?.length > 0;
+    return (result?.data?.length ?? 0) > 0;
   } catch {
     return false;
   }
@@ -255,13 +334,7 @@ async function cmdSetup() {
 
   // Create config if not exists
   if (!existsSync(CONFIG_FILE)) {
-    const config = {
-      version: "1.0.0",
-      ports: { app: 3060, ollama: 11434, screenpipe: 3030 },
-      ollama: { model: "qwen3:1.7b", managed: false },
-      screenpipe: { monitors: "all", interval: 30000 },
-      app: { pollInterval: 35000, lookbackMs: 60000 },
-    };
+    const config = createDefaultConfig();
     saveConfig(config);
     success("Configuration created");
   }
@@ -305,14 +378,16 @@ async function cmdStart() {
   }
 
   // Start Screenpipe
+  const screenpipeArgs = buildScreenpipeArgsFromConfig(config);
   const screenpipeInPm2 = services.find((s: any) => s.name === "screenpipe");
   if (screenpipeInPm2 && screenpipeInPm2.pm2_env?.status === "online") {
-    success("Screenpipe already running");
-  } else {
-    info("Starting Screenpipe via PM2...");
-    pm2Start("screenpipe", "screenpipe", ["--enable-realtime-vision"]);
-    success("Screenpipe started");
+    info("Screenpipe already running — recreating to apply config args...");
+    pm2Delete("screenpipe");
   }
+  info("Starting Screenpipe via PM2...");
+  info(`Screenpipe args: ${screenpipeArgs.join(" ") || "(none)"}`);
+  pm2Start("screenpipe", "screenpipe", screenpipeArgs);
+  success("Screenpipe started");
 
   // Start LivePipe app
   const appInPm2 = services.find((s: any) => s.name === "livepipe-app");

@@ -9,10 +9,85 @@
  */
 
 import { spawn, execSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 
-const SCREENPIPE_PORT = 3030;
-const OLLAMA_PORT = 11434;
-const APP_PORT = 3060;
+type ScreenpipeStartupConfig = {
+  realtimeVision: boolean;
+  adaptiveFps: boolean;
+  useAllMonitors: boolean;
+  disableAudio: boolean;
+  usePiiRemoval: boolean;
+  enableUiEvents: boolean;
+  disableVision: boolean;
+  captureUnfocusedWindows: boolean;
+  enableRealtimeAudioTranscription: boolean;
+};
+
+const DEFAULT_SCREENPIPE_STARTUP: ScreenpipeStartupConfig = {
+  realtimeVision: true,
+  adaptiveFps: true,
+  useAllMonitors: true,
+  disableAudio: true,
+  usePiiRemoval: true,
+  enableUiEvents: true,
+  disableVision: false,
+  captureUnfocusedWindows: false,
+  enableRealtimeAudioTranscription: false,
+};
+
+function loadRuntimeConfig(): {
+  ports: { app: number; ollama: number; screenpipe: number };
+  screenpipe: { startup: ScreenpipeStartupConfig };
+} {
+  const configPath = join(process.cwd(), "config.json");
+  const templatePath = join(process.cwd(), "config.template.json");
+  let parsed: any = {};
+
+  try {
+    if (existsSync(configPath)) {
+      parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+    } else if (existsSync(templatePath)) {
+      parsed = JSON.parse(readFileSync(templatePath, "utf-8"));
+    }
+  } catch (error) {
+    console.warn(`[dev] failed to parse config, using defaults: ${String(error)}`);
+  }
+
+  return {
+    ports: {
+      app: Number(parsed?.ports?.app) || 3060,
+      ollama: Number(parsed?.ports?.ollama) || 11434,
+      screenpipe: Number(parsed?.ports?.screenpipe) || 3030,
+    },
+    screenpipe: {
+      startup: {
+        ...DEFAULT_SCREENPIPE_STARTUP,
+        ...(parsed?.screenpipe?.startup ?? {}),
+      },
+    },
+  };
+}
+
+function buildScreenpipeArgs(startup: ScreenpipeStartupConfig): string[] {
+  const args: string[] = [];
+  if (startup.realtimeVision) args.push("--enable-realtime-vision");
+  if (startup.adaptiveFps) args.push("--adaptive-fps");
+  if (startup.useAllMonitors) args.push("--use-all-monitors");
+  if (startup.disableAudio) args.push("--disable-audio");
+  if (startup.usePiiRemoval) args.push("--use-pii-removal");
+  if (startup.enableUiEvents) args.push("--enable-ui-events");
+  if (startup.disableVision) args.push("--disable-vision");
+  if (startup.captureUnfocusedWindows) args.push("--capture-unfocused-windows");
+  if (startup.enableRealtimeAudioTranscription) args.push("--enable-realtime-audio-transcription");
+  return args;
+}
+
+const runtimeConfig = loadRuntimeConfig();
+const SCREENPIPE_PORT = runtimeConfig.ports.screenpipe;
+const OLLAMA_PORT = runtimeConfig.ports.ollama;
+const APP_PORT = runtimeConfig.ports.app;
+const SCREENPIPE_ARGS = buildScreenpipeArgs(runtimeConfig.screenpipe.startup);
 
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -148,36 +223,34 @@ function pm2Start(name: string, script: string, args: string[]): boolean {
 
 // ── Dependency Checks ────────────────────────────────────
 
-async function checkScreenpipe(): Promise<boolean> {
-  if (pm2IsRunning("screenpipe")) {
-    console.log(`${GREEN}[dev]${RESET} ✓ screenpipe ${DIM}(PM2, port ${SCREENPIPE_PORT})${RESET}`);
+async function checkScreenpipe(screenpipeArgs: string[]): Promise<boolean> {
+  // If screenpipe is already reachable, leave it alone — don't touch PM2 or kill anything
+  if (await isReachable(`http://localhost:${SCREENPIPE_PORT}/health`)) {
+    const source = pm2IsRunning("screenpipe") ? "PM2" : "external";
+    console.log(`${GREEN}[dev]${RESET} ✓ screenpipe ${DIM}(${source}, port ${SCREENPIPE_PORT})${RESET}`);
     return true;
   }
 
-  // Port might be occupied by a non-PM2 screenpipe or something else
-  await ensurePortFree(SCREENPIPE_PORT, "screenpipe");
-
-  // Check if PM2 has a stopped screenpipe entry — restart it
+  // Not reachable — clean up any stale PM2 entry
   const raw = exec("pm2 jlist");
   if (raw) {
     try {
       const list = JSON.parse(raw) as Array<{ name: string; pm2_env?: { status: string } }>;
       const existing = list.find((p) => p.name === "screenpipe");
       if (existing) {
-        console.log(`${CYAN}[dev]${RESET} Restarting existing PM2 screenpipe process...`);
-        exec("pm2 restart screenpipe");
-        await sleep(2000);
-        if (pm2IsRunning("screenpipe")) {
-          console.log(`${GREEN}[dev]${RESET} ✓ screenpipe restarted via PM2`);
-          return await waitForService(`http://localhost:${SCREENPIPE_PORT}/health`, "screenpipe", 15, 2000);
-        }
+        console.log(`${CYAN}[dev]${RESET} Removing stale PM2 screenpipe entry...`);
+        exec("pm2 delete screenpipe");
       }
     } catch {}
   }
 
+  // Ensure port is free before starting
+  await ensurePortFree(SCREENPIPE_PORT, "screenpipe");
+
   // Start fresh via PM2
   console.log(`${YELLOW}[dev]${RESET} screenpipe not running, starting via PM2...`);
-  const ok = pm2Start("screenpipe", "screenpipe", ["--enable-realtime-vision"]);
+  console.log(`${DIM}[dev] screenpipe args: ${screenpipeArgs.join(" ") || "(none)"}${RESET}`);
+  const ok = pm2Start("screenpipe", "screenpipe", screenpipeArgs);
   if (!ok) {
     console.error(`${RED}[dev]${RESET} ✗ screenpipe failed to start. Is it installed?`);
     console.error(`${DIM}       Install: brew install screenpipe${RESET}`);
@@ -251,7 +324,7 @@ async function main() {
   console.log(`\n${CYAN}[dev]${RESET} Checking dependencies...\n`);
 
   // Check dependencies in parallel
-  const [sp, ol] = await Promise.all([checkScreenpipe(), checkOllama()]);
+  const [sp, ol] = await Promise.all([checkScreenpipe(SCREENPIPE_ARGS), checkOllama()]);
 
   if (!sp || !ol) {
     const missing = [!sp && "screenpipe", !ol && "ollama"].filter(Boolean);

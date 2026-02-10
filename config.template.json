@@ -11,7 +11,29 @@
   },
   "screenpipe": {
     "monitors": "all",
-    "interval": 30000
+    "interval": 30000,
+    "startup": {
+      "realtimeVision": true,
+      "adaptiveFps": true,
+      "useAllMonitors": true,
+      "disableAudio": true,
+      "usePiiRemoval": true,
+      "enableUiEvents": true,
+      "disableVision": false,
+      "captureUnfocusedWindows": false,
+      "enableRealtimeAudioTranscription": false
+    },
+    "startupHelp": {
+      "realtimeVision": "Get the latest screen text faster.",
+      "adaptiveFps": "Raise FPS when active and lower it when idle to save resources.",
+      "useAllMonitors": "Capture content from all connected monitors.",
+      "disableAudio": "Do not capture audio or run speech transcription.",
+      "usePiiRemoval": "Automatically redact emails, phone numbers, keys, and other sensitive data.",
+      "enableUiEvents": "Capture keyboard, mouse, and clipboard events to improve behavior signals.",
+      "disableVision": "Disable screen OCR capture.",
+      "captureUnfocusedWindows": "Capture unfocused windows for higher recall with more noise.",
+      "enableRealtimeAudioTranscription": "Transcribe speech in real time."
+    }
   },
   "app": {
     "pollInterval": 35000,
