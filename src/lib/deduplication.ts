@@ -65,7 +65,7 @@ function parseTaskLine(line: string): TaskEntry | null {
     completed: status === "x",
     content: content.trim(),
     type: type || "todo",
-    dueTime: due && due.trim() !== "null" ? due.trim() : null,
+    dueTime: due?.trim() || null,
     detected: detected || new Date().toISOString(),
   };
 }
@@ -75,8 +75,10 @@ function parseTaskLine(line: string): TaskEntry | null {
  */
 function formatTaskLine(entry: TaskEntry): string {
   const check = entry.completed ? "x" : " ";
-  const due = entry.dueTime ?? "null";
-  return `- [${check}] ${entry.content} | type:${entry.type} | due:${due} | detected:${entry.detected}`;
+  let line = `- [${check}] ${entry.content} | type:${entry.type}`;
+  if (entry.dueTime) line += ` | due:${entry.dueTime}`;
+  line += ` | detected:${entry.detected}`;
+  return line;
 }
 
 /**
