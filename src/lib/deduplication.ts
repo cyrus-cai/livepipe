@@ -213,11 +213,21 @@ export function shouldNotify(result: IntentResult): boolean {
     }
   }
 
+  // Validate due_time is not in the past
+  let dueTime = result.due_time;
+  if (dueTime) {
+    const dueDate = new Date(dueTime);
+    if (!isNaN(dueDate.getTime()) && dueDate.getTime() < now.getTime()) {
+      console.log(`[dedup] due_time "${dueTime}" is in the past, clearing`);
+      dueTime = null;
+    }
+  }
+
   // New task — record it
   const entry: TaskEntry = {
     content: result.content,
     type: result.type,
-    dueTime: result.due_time,
+    dueTime,
     detected: now.toISOString(),
     completed: false,
   };

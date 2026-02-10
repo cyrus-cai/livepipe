@@ -32,8 +32,15 @@ CRITICAL rules for "content" field:
 - Do NOT use fragmented keywords or phrases without proper sentence structure
 - If you cannot form a complete, contextual sentence, set actionable to false
 
+CRITICAL rules for "due_time" field:
+- due_time must be a specific future date/time in ISO 8601 format: "YYYY-MM-DDTHH:mm"
+- The current date/time will be provided in each request. All due_time values MUST be AFTER the current time.
+- Convert relative expressions: "明天下午3点" → next day at 15:00, "今天5pm" → today at 17:00
+- If the resolved time would be in the past, push it to the next day
+- If no time is mentioned or cannot be determined, set to null
+
 Respond ONLY with JSON, no other text:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "time or null"}`;
+{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
 
 const HOTKEY_SYSTEM_PROMPT = `You analyze screen text captured when the user explicitly pressed a hotkey, meaning they WANT you to find actionable content. Be MORE lenient — the user is actively requesting analysis, so lower your threshold for "actionable".
 
@@ -59,8 +66,15 @@ CRITICAL rules for "content" field:
 - Do NOT use fragmented keywords or phrases without proper sentence structure
 - If you truly cannot find anything meaningful, set actionable to false
 
+CRITICAL rules for "due_time" field:
+- due_time must be a specific future date/time in ISO 8601 format: "YYYY-MM-DDTHH:mm"
+- The current date/time will be provided in each request. All due_time values MUST be AFTER the current time.
+- Convert relative expressions: "明天下午3点" → next day at 15:00, "今天5pm" → today at 17:00
+- If the resolved time would be in the past, push it to the next day
+- If no time is mentioned or cannot be determined, set to null
+
 Respond ONLY with JSON, no other text:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "time or null"}`;
+{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
 
 export interface DetectOptions {
   hotkeyTriggered?: boolean;
@@ -162,7 +176,13 @@ export async function detectIntent(
 
   const systemPrompt = hotkeyTriggered ? HOTKEY_SYSTEM_PROMPT : SYSTEM_PROMPT;
 
-  const userPrompt = `Screen text from [${appsStr}]:
+  const now = new Date();
+  const localTime = now.toLocaleString("zh-CN", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+  const isoDate = now.toISOString().slice(0, 16);
+
+  const userPrompt = `Current date/time: ${localTime} (${isoDate})
+
+Screen text from [${appsStr}]:
 ${cleanedText}
 
 JSON:`;
