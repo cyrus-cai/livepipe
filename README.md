@@ -9,9 +9,29 @@ A real-time screen content analysis tool powered by [Screenpipe](https://github.
 
 ![LivePipe Notifications Preview](public/preview.png)
 
-## THE NEXT STEP
+## Cloud Review Layer (Optional)
 
-- [ ] OpenClaw final review of detected screen content: decide whether to output it.
+The local small model (Qwen 1.7B) is fast but noisy. You can add a cloud LLM review layer that filters the small model's output before notifying. Configure in `pipe.json`:
+
+```json
+"review": {
+  "enabled": true,
+  "provider": "gemini",
+  "model": "gemini-3-flash-preview",
+  "apiKey": "your-google-ai-studio-key",
+  "failOpen": true
+}
+```
+
+When enabled, the pipeline becomes:
+
+```
+Screen OCR → Local model → Dedup (tasks-raw.md) → Cloud review → Record (tasks.md) → Notify
+```
+
+- Two-stage review: actionability validation + content quality check
+- `tasks-raw.md` deduplicates at the local model level to minimize cloud API calls
+- `tasks.md` only contains cloud-reviewed, high-quality tasks
 
 ## Getting Started
 

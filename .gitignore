@@ -50,6 +50,7 @@ test-pipeline.mjs
 config.json
 pipe.json
 tasks.md
+tasks-raw.md
 
 # Swift helper build artifacts
 swift-helper/

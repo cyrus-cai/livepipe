@@ -1,7 +1,11 @@
 import { pipe } from "@screenpipe/js";
 import { detectIntent } from "@/lib/intent-detector";
-import { shouldNotify, loadTasksFromFile } from "@/lib/deduplication";
+import { shouldNotify, shouldProcess, recordAndNotify, loadTasksFromFile, loadRawFromFile } from "@/lib/deduplication";
 import { sendNotification } from "@/lib/notifier";
+import { reviewIntent } from "@/lib/review";
+import { createGeminiProvider } from "@/lib/providers/gemini";
+import type { LlmProvider } from "@/lib/llm-provider";
+import type { IntentResult } from "@/lib/schemas";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -57,9 +61,106 @@ function loadCaptureConfig(): CaptureConfig {
   }
 }
 
-const captureConfig = loadCaptureConfig();
+interface ReviewConfig {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  apiKey: string;
+  failOpen: boolean;
+}
 
+function loadReviewConfig(): ReviewConfig {
+  const defaults: ReviewConfig = {
+    enabled: false,
+    provider: "",
+    model: "",
+    apiKey: "",
+    failOpen: true,
+  };
+  try {
+    const raw = readFileSync(CONFIG_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...defaults, ...parsed.review };
+  } catch {
+    return defaults;
+  }
+}
+
+const captureConfig = loadCaptureConfig();
 const filterConfig = loadFilterConfig();
+const reviewConfig = loadReviewConfig();
+
+let reviewProvider: LlmProvider | null = null;
+
+function getReviewProvider(): LlmProvider | null {
+  if (!reviewConfig.enabled || !reviewConfig.apiKey) return null;
+  if (!reviewConfig.provider || !reviewConfig.model) {
+    console.error("[review] review.provider and review.model must be configured in pipe.json");
+    return null;
+  }
+  if (!reviewProvider) {
+    if (reviewConfig.provider === "gemini") {
+      reviewProvider = createGeminiProvider({
+        apiKey: reviewConfig.apiKey,
+        model: reviewConfig.model,
+      });
+    } else {
+      console.error(`[review] unknown provider: ${reviewConfig.provider}`);
+      return null;
+    }
+  }
+  return reviewProvider;
+}
+
+/**
+ * Process an actionable intent through the review pipeline.
+ * When review is enabled: shouldProcess (dedup) → Gemini review → recordAndNotify → notify
+ * When review is disabled: shouldNotify (dedup + record) → notify
+ */
+async function processIntent(intent: IntentResult): Promise<void> {
+  if (!intent.actionable) {
+    console.log("[poll] not actionable");
+    return;
+  }
+
+  const provider = getReviewProvider();
+
+  if (!provider) {
+    // Review not enabled — use legacy path (dedup + record combined)
+    if (shouldNotify(intent)) {
+      console.log(`[poll] ACTIONABLE: type=${intent.type}, content="${intent.content}", due=${intent.due_time}`);
+      await sendNotification(intent);
+    } else {
+      console.log("[poll] duplicate, skipped");
+    }
+    return;
+  }
+
+  // Review enabled — two-layer flow
+  if (!shouldProcess(intent)) {
+    console.log("[poll] duplicate (raw), skipped review");
+    return;
+  }
+
+  try {
+    const reviewed = await reviewIntent(provider, intent);
+    if (!reviewed || !reviewed.actionable) {
+      console.log("[poll] review rejected");
+      return;
+    }
+
+    recordAndNotify(reviewed);
+    console.log(`[poll] REVIEWED & ACTIONABLE: type=${reviewed.type}, content="${reviewed.content}", due=${reviewed.due_time}`);
+    await sendNotification(reviewed);
+  } catch (err) {
+    console.error("[poll] review error:", err);
+    if (reviewConfig.failOpen) {
+      console.log("[poll] failOpen: passing through without review");
+      recordAndNotify(intent);
+      await sendNotification(intent);
+    }
+  }
+}
 
 // Lowercase sets for case-insensitive matching
 const allowedAppsLower = new Set(filterConfig.allowedApps.map(a => a.toLowerCase()));
@@ -316,16 +417,10 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       return { triggered: true };
     }
 
-    if (!intent.actionable) {
-      console.log("[trigger] not actionable");
-      return { triggered: true, intent };
-    }
-
-    if (shouldNotify(intent)) {
-      console.log(`[trigger] ACTIONABLE: type=${intent.type}, content="${intent.content}", due=${intent.due_time}`);
-      await sendNotification(intent);
+    if (intent.actionable) {
+      await processIntent(intent);
     } else {
-      console.log("[trigger] duplicate, skipped");
+      console.log("[trigger] not actionable");
     }
 
     return { triggered: true, intent };
@@ -402,15 +497,8 @@ async function runPipeline() {
 
         if (!intent) {
           console.log("[poll] intent detection returned null");
-        } else if (!intent.actionable) {
-          console.log("[poll] not actionable");
-        } else if (shouldNotify(intent)) {
-          console.log(
-            `[poll] ACTIONABLE: type=${intent.type}, content="${intent.content}", due=${intent.due_time}`
-          );
-          await sendNotification(intent);
         } else {
-          console.log("[poll] duplicate, skipped");
+          await processIntent(intent);
         }
       } catch (error) {
         console.error("[poll] error:", error);
@@ -430,7 +518,13 @@ export function startPipeline() {
     return;
   }
   console.log("[auto-start] Starting pipeline...");
+  loadRawFromFile();
   loadTasksFromFile();
+  if (reviewConfig.enabled && reviewConfig.apiKey) {
+    console.log(`[pipeline] review enabled: provider=${reviewConfig.provider}, model=${reviewConfig.model}`);
+  } else {
+    console.log("[pipeline] review disabled");
+  }
   runPipeline().catch((err) =>
     console.error("[pipeline] unhandled error:", err)
   );

@@ -43,6 +43,13 @@
     "mode": "always",
     "hotkeyHoldMs": 500
   },
+  "review": {
+    "enabled": false,
+    "provider": "gemini",
+    "model": "gemini-3-flash-preview",
+    "apiKey": "your-google-ai-studio-key",
+    "failOpen": true
+  },
   "notification": {
     "desktop": true,
     "webhooks": [
