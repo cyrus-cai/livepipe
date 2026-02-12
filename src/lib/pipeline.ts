@@ -2,7 +2,7 @@ import { pipe } from "@screenpipe/js";
 import { detectIntent } from "@/lib/intent-detector";
 import { shouldNotify, shouldProcess, recordAndNotify, loadTasksFromFile, loadRawFromFile } from "@/lib/deduplication";
 import { sendNotification } from "@/lib/notifier";
-import { reviewIntent } from "@/lib/review";
+import { reviewIntent, type ReviewContext } from "@/lib/review";
 import { createGeminiProvider } from "@/lib/providers/gemini";
 import type { LlmProvider } from "@/lib/llm-provider";
 import type { IntentResult } from "@/lib/schemas";
@@ -86,9 +86,20 @@ function loadReviewConfig(): ReviewConfig {
   }
 }
 
+function loadOutputLanguage(): string {
+  try {
+    const raw = readFileSync(CONFIG_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed.outputLanguage || "zh-CN";
+  } catch {
+    return "zh-CN";
+  }
+}
+
 const captureConfig = loadCaptureConfig();
 const filterConfig = loadFilterConfig();
 const reviewConfig = loadReviewConfig();
+const outputLanguage = loadOutputLanguage();
 
 let reviewProvider: LlmProvider | null = null;
 
@@ -117,7 +128,7 @@ function getReviewProvider(): LlmProvider | null {
  * When review is enabled: shouldProcess (dedup) → Gemini review → recordAndNotify → notify
  * When review is disabled: shouldNotify (dedup + record) → notify
  */
-async function processIntent(intent: IntentResult): Promise<void> {
+async function processIntent(intent: IntentResult, context?: ReviewContext): Promise<void> {
   if (!intent.actionable) {
     console.log("[poll] not actionable");
     return;
@@ -143,7 +154,7 @@ async function processIntent(intent: IntentResult): Promise<void> {
   }
 
   try {
-    const reviewed = await reviewIntent(provider, intent);
+    const reviewed = await reviewIntent(provider, intent, context);
     if (!reviewed || !reviewed.actionable) {
       console.log("[poll] review rejected");
       return;
@@ -211,6 +222,36 @@ function appendLog(entry: object) {
   } catch (e) {
     console.error("[log] write error:", e);
   }
+}
+
+/**
+ * Extract a short snippet (~120 chars) from raw OCR texts that is most relevant
+ * to the intent content. Searches for overlapping keywords, returns surrounding context.
+ */
+function extractSnippet(texts: string[], contentHint: string): string {
+  const combined = texts.join(" ").replace(/\s+/g, " ");
+  if (combined.length <= 120) return combined;
+
+  // Extract keywords (>=2 chars) from the intent content to locate relevant region
+  const keywords = contentHint.match(/[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}|\d{2,}/g) || [];
+
+  let bestPos = 0;
+  let bestScore = 0;
+  for (let i = 0; i < combined.length - 60; i += 20) {
+    const window = combined.substring(i, i + 120);
+    let score = 0;
+    for (const kw of keywords) {
+      if (window.includes(kw)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestPos = i;
+    }
+  }
+
+  const start = Math.max(0, bestPos);
+  const snippet = combined.substring(start, start + 120).trim();
+  return snippet + (start + 120 < combined.length ? "..." : "");
 }
 
 function sleep(ms: number) {
@@ -418,7 +459,13 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
     }
 
     if (intent.actionable) {
-      await processIntent(intent);
+      const reviewCtx: ReviewContext = {
+        sourceApp: [...apps].join(", "),
+        trigger: "hotkey",
+        textSnippet: extractSnippet(texts, intent.content),
+        language: outputLanguage,
+      };
+      await processIntent(intent, reviewCtx);
     } else {
       console.log("[trigger] not actionable");
     }
@@ -497,8 +544,16 @@ async function runPipeline() {
 
         if (!intent) {
           console.log("[poll] intent detection returned null");
+        } else if (intent.actionable) {
+          const reviewCtx: ReviewContext = {
+            sourceApp: [...data.apps].join(", "),
+            trigger: "poll",
+            textSnippet: extractSnippet(data.texts, intent.content),
+            language: outputLanguage,
+          };
+          await processIntent(intent, reviewCtx);
         } else {
-          await processIntent(intent);
+          console.log("[poll] not actionable");
         }
       } catch (error) {
         console.error("[poll] error:", error);

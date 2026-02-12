@@ -39,6 +39,7 @@
     ],
     "minTextLength": 20
   },
+  "outputLanguage": "zh-CN",
   "capture": {
     "mode": "always",
     "hotkeyHoldMs": 500

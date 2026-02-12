@@ -1,6 +1,21 @@
 import type { LlmProvider } from "./llm-provider";
 import type { IntentResult } from "./schemas";
 
+/**
+ * Lightweight context passed alongside IntentResult to help the cloud reviewer
+ * make better judgments without seeing the full OCR text.
+ */
+export interface ReviewContext {
+  /** App that produced the OCR text, e.g. "chrome", "slack" */
+  sourceApp: string;
+  /** "poll" = automatic background capture, "hotkey" = user pressed hotkey */
+  trigger: "poll" | "hotkey";
+  /** Short snippet (~120 chars) of original OCR around the relevant content */
+  textSnippet: string;
+  /** Target language for the refined output, e.g. "zh-CN", "en", "ja" */
+  language: string;
+}
+
 // ANSI colors for cloud API logs
 const CYAN = "\x1b[36m";
 const YELLOW = "\x1b[33m";
@@ -16,41 +31,54 @@ const BOLD = "\x1b[1m";
  */
 const ACTIONABILITY_PROMPT = `You are a task review expert. Your job is to verify whether a "to-do item" extracted by a small AI model from screen OCR text is truly a task that requires human action.
 
+You will receive:
+- The extracted task (type, content, due_time)
+- Source app: which application the screen text came from
+- Trigger: "poll" (automatic background capture) or "hotkey" (user explicitly requested capture — be more lenient)
+- OCR snippet: a short excerpt of original screen text for context
+
+Use the source app and OCR snippet to judge whether this is a real task:
+- Browser ads/buttons ("Buy Now", "Subscribe") from chrome are usually NOT real tasks
+- Messages from chat apps (slack, wechat, telegram) that say "remember to..." ARE likely real
+- Calendar/email apps have high trust for meetings and deadlines
+- If trigger is "hotkey", the user actively wanted this captured — lower your rejection threshold
+
 Common false positives from the small model:
 - UI labels, button text, or menu items misidentified as tasks
 - News headlines or article content misidentified as to-do items
 - Code comments or TODO markers misidentified as user tasks
 - Ads or recommended content misidentified as reminders
-- Hallucinated tasks that don't exist in the original text
-- Other people's conversation content misidentified as tasks for the user
+- Hallucinated tasks that don't match the OCR snippet at all
 
-Criteria:
-- Real task: has a clear action to perform, and it's something the user personally needs to do
-- Not a task: pure information, news, UI text, code, other people's content, vague descriptions
-
-Review the following small model output and respond in JSON format:
+Respond in JSON format:
 {"approved": true/false, "reason": "brief explanation"}
 
 Respond ONLY with JSON, no other text.`;
 
 /**
- * Prompt 2: Content quality review
- * Check Chinese sentence quality, optionally refine the expression.
+ * Prompt 2: Content refinement
+ * Take the raw extracted text and produce a clean, natural to-do sentence in the target language.
  */
-const QUALITY_PROMPT = `You are a Chinese content quality reviewer. Your job is to check whether a to-do item's Chinese expression is clear, complete, and natural.
+function buildQualityPrompt(language: string): string {
+  return `You are a to-do content refiner. You receive raw text extracted from a screen by a small model, along with an OCR snippet for context. Your job is to produce a clean, natural to-do sentence in ${language}.
 
-Review criteria:
-- Is the sentence complete and self-explanatory (without needing to see the original screen)?
-- Does it contain OCR artifacts, garbled characters, or truncated text?
-- Is the grammar correct and wording accurate?
-- Does it include necessary context (who, what, when)?
+Your tasks:
+1. Verify the content matches the OCR snippet (reject hallucinations or text that doesn't match)
+2. Translate to ${language} if the original is in a different language
+3. Write a complete, self-explanatory sentence (who/what/when as applicable)
+4. Translate well-known brand/proper names to their standard ${language} form if one exists
+5. Keep unknown proper nouns in their original form — do NOT invent translations
 
-If the content quality is acceptable, you may slightly adjust the wording to make it more natural. If there are serious issues (garbled text, incomprehensible, missing key information), reject it.
+Reject if:
+- Content is garbled, incomprehensible, or contains OCR artifacts
+- Content doesn't match the OCR snippet at all (hallucination)
+- Content is too vague to be a useful to-do item
 
-Review the following content and respond in JSON format:
-{"approved": true/false, "refined_content": "refined content (if approved is true)", "reason": "brief explanation"}
+Respond in JSON format:
+{"approved": true/false, "refined_content": "refined sentence in ${language} (if approved)", "reason": "brief explanation"}
 
 Respond ONLY with JSON, no other text.`;
+}
 
 function extractReviewJson(text: string): Record<string, unknown> | null {
   const match = text.match(/\{[\s\S]*\}/);
@@ -68,11 +96,19 @@ function extractReviewJson(text: string): Record<string, unknown> | null {
  */
 export async function reviewIntent(
   provider: LlmProvider,
-  intent: IntentResult
+  intent: IntentResult,
+  context?: ReviewContext
 ): Promise<IntentResult | null> {
   // Stage 1: Actionability check
   try {
-    const input1 = `Task type: ${intent.type}\nContent: ${intent.content}\nDue time: ${intent.due_time || "none"}`;
+    let input1 = `Task type: ${intent.type}\nContent: ${intent.content}\nDue time: ${intent.due_time || "none"}`;
+    if (context) {
+      input1 += `\nSource app: ${context.sourceApp}`;
+      input1 += `\nTrigger: ${context.trigger}`;
+      if (context.textSnippet) {
+        input1 += `\nOCR snippet: ${context.textSnippet}`;
+      }
+    }
 
     console.log(`${BOLD}${CYAN}[review] ☁️  CLOUD API CALL — stage 1: actionability check${RESET}`);
     console.log(`${CYAN}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
@@ -95,14 +131,19 @@ export async function reviewIntent(
     throw err;
   }
 
-  // Stage 2: Content quality check
+  // Stage 2: Content refinement
   try {
-    console.log(`${BOLD}${MAGENTA}[review] ☁️  CLOUD API CALL — stage 2: content quality${RESET}`);
+    const lang = context?.language || "zh-CN";
+    console.log(`${BOLD}${MAGENTA}[review] ☁️  CLOUD API CALL — stage 2: content refinement (${lang})${RESET}`);
     console.log(`${MAGENTA}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
+    let input2 = `Content: ${intent.content}`;
+    if (context?.textSnippet) {
+      input2 += `\nOCR snippet: ${context.textSnippet}`;
+    }
     const response2 = await provider.chat(
       [
-        { role: "system", content: QUALITY_PROMPT },
-        { role: "user", content: intent.content },
+        { role: "system", content: buildQualityPrompt(lang) },
+        { role: "user", content: input2 },
       ],
       { temperature: 0.1, maxTokens: 300 },
     );

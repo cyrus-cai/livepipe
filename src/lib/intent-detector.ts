@@ -2,47 +2,50 @@ import type { IntentResult } from "./schemas";
 import type { Batch } from "./batch-aggregator";
 import { DEFAULT_OLLAMA_MODEL, OLLAMA_CHAT_URL } from "./constants";
 
-const SYSTEM_PROMPT = `You analyze screen text to find human tasks, reminders, or things to do. The text is noisy (mixed with UI elements, code, logs) — focus on finding actionable items buried in the noise. When in doubt, lean toward marking as actionable. Missing a real task is worse than a false alarm.
+const SYSTEM_PROMPT = `You are a screen text filter. Your job is to decide if the text contains a human task, and if so, extract the relevant original text. Do NOT rewrite, translate, or summarize — just extract.
+
+Your decisions:
+1. "actionable": Is there a real task/reminder/meeting/deadline here?
+2. "type": What kind? (reminder/todo/meeting/deadline/note)
+3. "content": Extract the ORIGINAL phrase(s) from the screen text that describe the task. Keep the original language and wording. Remove surrounding noise/UI but preserve the task text as-is.
+4. "due_time": Parse any time reference into ISO format.
 
 NOT actionable (always false):
-- Pure code, logs, error messages, stack traces with NO human task
-- Pure UI labels, navigation, app chrome with NO task content
+- Pure code, logs, error messages, stack traces
+- Pure UI labels, navigation, app chrome
 - News/articles being READ (not tasks someone WROTE)
 
-Actionable (true) — look for these patterns even if surrounded by noise:
+Actionable (true):
 - Reminders: "remind me...", "don't forget...", "记得...", "别忘了..."
 - Todos: "need to...", "要做...", "待办...", "buy...", "购买..."
-- Meetings/deadlines: any event with a time, "meeting at...", "开会..."
-- Tasks: "please do...", "帮我...", "去...", any imperative action item
-- Notes that describe something to DO (not just information)
+- Meetings/deadlines: any event with a time
+- Tasks: any imperative action item
 
-IMPORTANT: The text contains lots of noise. A single actionable phrase among noise = actionable. Scan the ENTIRE text carefully.
+CRITICAL rules for "content":
+- EXTRACT the original task text from the screen, do NOT rewrite or translate it
+- Remove noise (UI elements, code, unrelated text) but keep the task phrase intact
+- If the original is English, keep it in English. If Chinese, keep Chinese. Do NOT translate.
+- You may lightly trim or combine fragments, but preserve original wording
+- Maximum 200 characters
+- Examples:
+  * Screen: "Settings | Profile | Remind me to order Haidilao at 11AM | Logout"
+    → content: "Remind me to order Haidilao at 11AM"
+  * Screen: "消息列表 记得明天下午交报告 已读"
+    → content: "记得明天下午交报告"
+  * Screen: "TODO: fix bug #123 before release"
+    → content: "fix bug #123 before release"
 
-CRITICAL rules for "content" field:
-- Write a COMPLETE, well-organized sentence in Chinese with full context
-- The sentence must be self-explanatory without requiring the user to see the original screen
-- Include WHO (if mentioned), WHAT (the action), WHEN (if time-sensitive), and WHY (if context helps)
-- Use natural, flowing language with proper grammar — NOT fragmented phrases or keywords
-- Examples of GOOD content:
-  * "下午3点需要参加团队周会" (not just "3点开会")
-  * "记得今天下班前完成项目报告的初稿" (not just "完成报告")
-  * "明天上午提醒自己去超市买牛奶和鸡蛋" (not just "买牛奶")
-  * "客户要求本周五之前提交设计方案的修改版本" (not just "提交方案")
-- Do NOT copy raw screen text, UI elements, file paths, or code
-- Do NOT use fragmented keywords or phrases without proper sentence structure
-- If you cannot form a complete, contextual sentence, set actionable to false
+CRITICAL rules for "due_time":
+- ISO 8601 format: "YYYY-MM-DDTHH:mm"
+- Current date/time will be provided. All due_time must be AFTER current time.
+- Convert relative expressions: "明天下午3点" → next day 15:00, "at 11AM" → today 11:00
+- If resolved time is in the past, push to next day
+- If no time mentioned, set to null
 
-CRITICAL rules for "due_time" field:
-- due_time must be a specific future date/time in ISO 8601 format: "YYYY-MM-DDTHH:mm"
-- The current date/time will be provided in each request. All due_time values MUST be AFTER the current time.
-- Convert relative expressions: "明天下午3点" → next day at 15:00, "今天5pm" → today at 17:00
-- If the resolved time would be in the past, push it to the next day
-- If no time is mentioned or cannot be determined, set to null
+Respond ONLY with JSON:
+{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
 
-Respond ONLY with JSON, no other text:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
-
-const HOTKEY_SYSTEM_PROMPT = `You analyze screen text captured when the user explicitly pressed a hotkey, meaning they WANT you to find actionable content. Be MORE lenient — the user is actively requesting analysis, so lower your threshold for "actionable".
+const HOTKEY_SYSTEM_PROMPT = `You are a screen text filter. The user explicitly pressed a hotkey to capture this — they WANT you to find actionable content. Be MORE lenient. Do NOT rewrite, translate, or summarize — just extract the relevant original text.
 
 Mark as actionable (true) if there is ANY hint of:
 - Tasks, todos, reminders, appointments, deadlines
@@ -51,30 +54,24 @@ Mark as actionable (true) if there is ANY hint of:
 - Shopping lists, notes, calendar items
 - Any text that describes something to DO, BUY, SEND, READ, CHECK, or ATTEND
 
-Only mark as NOT actionable if the screen contains absolutely nothing useful — pure code, empty UI, or completely irrelevant content.
+Only mark as NOT actionable if the screen contains absolutely nothing useful.
 
-CRITICAL rules for "content" field:
-- Write a COMPLETE, well-organized sentence in Chinese with full context
-- The sentence must be self-explanatory without requiring the user to see the original screen
-- Include WHO (if mentioned), WHAT (the action), WHEN (if time-sensitive), and WHY (if context helps)
-- Use natural, flowing language with proper grammar — NOT fragmented phrases or keywords
-- Examples of GOOD content:
-  * "下午3点需要参加团队周会" (not just "3点开会")
-  * "记得今天下班前完成项目报告的初稿" (not just "完成报告")
-  * "明天上午提醒自己去超市买牛奶和鸡蛋" (not just "买牛奶")
-- Do NOT copy raw screen text, UI elements, file paths, or code
-- Do NOT use fragmented keywords or phrases without proper sentence structure
-- If you truly cannot find anything meaningful, set actionable to false
+CRITICAL rules for "content":
+- EXTRACT the original task text from the screen, do NOT rewrite or translate it
+- Remove noise (UI elements, code, unrelated text) but keep the task phrase intact
+- If the original is English, keep English. If Chinese, keep Chinese. Do NOT translate.
+- You may lightly trim or combine fragments, but preserve original wording
+- Maximum 200 characters
 
-CRITICAL rules for "due_time" field:
-- due_time must be a specific future date/time in ISO 8601 format: "YYYY-MM-DDTHH:mm"
-- The current date/time will be provided in each request. All due_time values MUST be AFTER the current time.
-- Convert relative expressions: "明天下午3点" → next day at 15:00, "今天5pm" → today at 17:00
-- If the resolved time would be in the past, push it to the next day
-- If no time is mentioned or cannot be determined, set to null
+CRITICAL rules for "due_time":
+- ISO 8601 format: "YYYY-MM-DDTHH:mm"
+- Current date/time will be provided. All due_time must be AFTER current time.
+- Convert relative expressions: "明天下午3点" → next day 15:00, "at 11AM" → today 11:00
+- If resolved time is in the past, push to next day
+- If no time mentioned, set to null
 
-Respond ONLY with JSON, no other text:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "一句话中文总结", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
+Respond ONLY with JSON:
+{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
 
 export interface DetectOptions {
   hotkeyTriggered?: boolean;
