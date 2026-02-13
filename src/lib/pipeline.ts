@@ -6,7 +6,19 @@ import { reviewIntent, type ReviewContext } from "@/lib/review";
 import { createGeminiProvider } from "@/lib/providers/gemini";
 import type { LlmProvider } from "@/lib/llm-provider";
 import type { IntentResult } from "@/lib/schemas";
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
+import {
+  type CaptureConfig,
+  type FilterConfig,
+  type PipeConfig,
+  type ReviewConfig,
+  PipeConfigValidationError,
+  getEffectiveConfigSnapshot,
+  getLastPipeConfigEvent,
+  getPipeConfig,
+  loadPipeConfigOrThrow,
+  startPipeConfigWatcher,
+} from "@/lib/pipe-config";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
 let POLL_INTERVAL_MS = 35_000;
@@ -19,89 +31,84 @@ let isFirstPoll = true;
 
 const LOG_DIR = join(process.cwd(), "logs");
 const LOG_FILE = join(LOG_DIR, "screenpipe-raw.jsonl");
-const CONFIG_FILE = join(process.cwd(), "pipe.json");
-
-export type CaptureMode = "always" | "hotkey" | "both";
-
-interface FilterConfig {
-  allowedApps: string[];
-  blockedWindows: string[];
-  minTextLength: number;
-}
-
-interface CaptureConfig {
-  mode: CaptureMode;
-  hotkeyHoldMs: number;
-}
-
-function loadFilterConfig(): FilterConfig {
-  const defaults: FilterConfig = {
-    allowedApps: [],
-    blockedWindows: ["livepipe", "opencode", "screenpipe"],
-    minTextLength: 20,
-  };
-  try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return { ...defaults, ...parsed.filter };
-  } catch {
-    console.log("[config] no pipe.json found or missing filter section, using defaults (no app filter)");
-    return defaults;
-  }
-}
-
-function loadCaptureConfig(): CaptureConfig {
-  const defaults: CaptureConfig = { mode: "always", hotkeyHoldMs: 500 };
-  try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return { ...defaults, ...parsed.capture };
-  } catch {
-    return defaults;
-  }
-}
-
-interface ReviewConfig {
-  enabled: boolean;
-  provider: string;
-  model: string;
-  apiKey: string;
-  failOpen: boolean;
-}
-
-function loadReviewConfig(): ReviewConfig {
-  const defaults: ReviewConfig = {
-    enabled: false,
-    provider: "",
-    model: "",
-    apiKey: "",
-    failOpen: true,
-  };
-  try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return { ...defaults, ...parsed.review };
-  } catch {
-    return defaults;
-  }
-}
-
-function loadOutputLanguage(): string {
-  try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return parsed.outputLanguage || "zh-CN";
-  } catch {
-    return "zh-CN";
-  }
-}
-
-const captureConfig = loadCaptureConfig();
-const filterConfig = loadFilterConfig();
-const reviewConfig = loadReviewConfig();
-const outputLanguage = loadOutputLanguage();
+let captureConfig: CaptureConfig;
+let filterConfig: FilterConfig;
+let reviewConfig: ReviewConfig;
+let outputLanguage = "zh-CN";
+let allowedAppsLower = new Set<string>();
+let blockedWindowsLower: string[] = [];
 
 let reviewProvider: LlmProvider | null = null;
+let configWatcherInitialized = false;
+
+function logConfigValidationError(error: unknown): void {
+  if (error instanceof PipeConfigValidationError) {
+    console.error("[config] pipe.json 校验失败，请修复以下字段：");
+    for (const issue of error.issues) {
+      console.error(`[config] - ${issue}`);
+    }
+    return;
+  }
+  console.error("[config] failed to load pipe.json:", error);
+}
+
+function applyRuntimeConfig(config: PipeConfig, options?: { resetReviewProvider?: boolean }): void {
+  captureConfig = config.capture;
+  filterConfig = config.filter;
+  reviewConfig = config.review;
+  outputLanguage = config.outputLanguage;
+  allowedAppsLower = new Set(filterConfig.allowedApps.map((app) => app.toLowerCase()));
+  blockedWindowsLower = filterConfig.blockedWindows.map((item) => item.toLowerCase());
+
+  if (options?.resetReviewProvider) {
+    reviewProvider = null;
+  }
+}
+
+function logEffectiveConfig(): void {
+  const snapshot = getEffectiveConfigSnapshot();
+  console.log(
+    `[config] 生效配置: review.enabled=${snapshot.reviewEnabled}, review.provider=${snapshot.provider || "(unset)"}, review.model=${snapshot.model || "(unset)"}, outputLanguage=${snapshot.outputLanguage}`
+  );
+}
+
+function setupConfigWatcher(): void {
+  if (configWatcherInitialized) {
+    return;
+  }
+  configWatcherInitialized = true;
+
+  startPipeConfigWatcher((event) => {
+    if (event.type === "validation-error") {
+      console.error(`[config] ${event.message}`);
+      if (event.issues?.length) {
+        for (const issue of event.issues) {
+          console.error(`[config] - ${issue}`);
+        }
+      }
+      return;
+    }
+
+    const nextConfig = getPipeConfig();
+    const resetReviewProvider = event.changedFields.some((path) => path.startsWith("review."));
+    applyRuntimeConfig(nextConfig, { resetReviewProvider });
+
+    if (event.hotReloaded.length > 0) {
+      console.log(`[config] 已热加载: ${event.hotReloaded.join(", ")}`);
+      logEffectiveConfig();
+    }
+    if (event.restartRequired.length > 0) {
+      console.warn(`[config] 配置变更需要重启后生效: ${event.restartRequired.join(", ")}`);
+    }
+  });
+}
+
+try {
+  applyRuntimeConfig(loadPipeConfigOrThrow(), { resetReviewProvider: true });
+} catch (error) {
+  logConfigValidationError(error);
+  throw error;
+}
 
 function getReviewProvider(): LlmProvider | null {
   if (!reviewConfig.enabled || !reviewConfig.apiKey) return null;
@@ -172,10 +179,6 @@ async function processIntent(intent: IntentResult, context?: ReviewContext): Pro
     }
   }
 }
-
-// Lowercase sets for case-insensitive matching
-const allowedAppsLower = new Set(filterConfig.allowedApps.map(a => a.toLowerCase()));
-const blockedWindowsLower = filterConfig.blockedWindows.map(w => w.toLowerCase());
 
 function isAppAllowed(appName: string): boolean {
   if (allowedAppsLower.size === 0) return true; // no whitelist = allow all
@@ -572,9 +575,11 @@ export function startPipeline() {
     console.log("[pipeline] already running");
     return;
   }
+  setupConfigWatcher();
   console.log("[auto-start] Starting pipeline...");
   loadRawFromFile();
   loadTasksFromFile();
+  logEffectiveConfig();
   if (reviewConfig.enabled && reviewConfig.apiKey) {
     console.log(`[pipeline] review enabled: provider=${reviewConfig.provider}, model=${reviewConfig.model}`);
   } else {
@@ -587,4 +592,15 @@ export function startPipeline() {
 
 export function isPipelineRunning() {
   return isRunning;
+}
+
+export function getPipelineStatusSnapshot() {
+  return {
+    running: isRunning,
+    message: isRunning
+      ? "Pipeline is running (managed by dev script)"
+      : "Pipeline is not running — start with `bun run dev`",
+    effectiveConfig: getEffectiveConfigSnapshot(),
+    configUpdate: getLastPipeConfigEvent(),
+  };
 }

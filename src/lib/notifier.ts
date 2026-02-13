@@ -1,7 +1,6 @@
 import { exec } from "child_process";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 import type { IntentResult } from "./schemas";
+import { getPipeConfig, type NotificationConfig, type WebhookConfig } from "./pipe-config";
 
 const TYPE_LABELS: Record<string, string> = {
   reminder: "Reminder",
@@ -11,48 +10,19 @@ const TYPE_LABELS: Record<string, string> = {
   note: "Note",
 };
 
-type WebhookProvider = "generic" | "feishu" | "telegram";
-
-interface WebhookConfig {
-  url: string;
-  enabled?: boolean;
-  provider?: WebhookProvider;
-  headers?: Record<string, string>;
-  chatId?: string;
-}
-
-interface NotificationConfig {
-  desktop?: boolean;
-  webhooks?: WebhookConfig[];
-}
-
-const CONFIG_FILE = join(process.cwd(), "pipe.json");
-
-const DEFAULT_NOTIFICATION_CONFIG: Required<NotificationConfig> = {
+const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
   desktop: true,
   webhooks: [],
 };
 
-function loadNotificationConfig(): Required<NotificationConfig> {
-  if (!existsSync(CONFIG_FILE)) {
-    return DEFAULT_NOTIFICATION_CONFIG;
-  }
-
+function getNotificationConfig(): NotificationConfig {
   try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as { notification?: NotificationConfig };
-    const notification = parsed.notification ?? {};
-    return {
-      desktop: notification.desktop ?? true,
-      webhooks: (notification.webhooks ?? []).filter((item) => Boolean(item?.url)),
-    };
+    return getPipeConfig().notification;
   } catch (error) {
-    console.error("[notify] failed to parse notification config:", error);
+    console.error("[notify] failed to read notification config:", error);
     return DEFAULT_NOTIFICATION_CONFIG;
   }
 }
-
-const notificationConfig = loadNotificationConfig();
 
 function escapeAppleScript(str: string): string {
   return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -168,6 +138,7 @@ async function sendWebhookNotification(
 
 export async function sendNotification(result: IntentResult): Promise<void> {
   const { typeLabel, title, body } = buildNotificationMessage(result);
+  const notificationConfig = getNotificationConfig();
 
   const jobs: Promise<void>[] = [];
 
