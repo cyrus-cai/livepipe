@@ -5,84 +5,110 @@
 
 > **Low-Key Preview** — This version is unstable and underperforms; for research and testing only.
 
-A real-time screen content analysis tool powered by [Screenpipe](https://github.com/mediar-ai/screenpipe) + local LLM ([Ollama](https://ollama.com)). It watches your screen and sends desktop notifications when it detects actionable items — todos, reminders, meetings, deadlines.
+LivePipe watches your screen in real time through OCR, uses a local LLM to detect actionable items — todos, reminders, meetings, deadlines — and pushes them to you as desktop notifications, webhooks, or Apple Reminders. No manual input required: just work normally, and LivePipe catches what matters.
 
-![LivePipe Notifications Preview](public/preview.png)
-
-## Cloud Review Layer (Optional)
-
-The local small model (Qwen 1.7B) is fast but noisy. You can add a cloud LLM review layer that filters the small model's output before notifying. Configure in `pipe.json`:
-
-```json
-"review": {
-  "enabled": true,
-  "provider": "gemini",
-  "model": "gemini-3-flash-preview",
-  "apiKey": "your-google-ai-studio-key",
-  "failOpen": true
-}
-```
-
-When enabled, the pipeline becomes:
+## How It Works
 
 ```
-Screen OCR → Local model → Dedup (tasks-raw.md) → Cloud review → Record (tasks.md) → Notify
+Screen OCR (Screenpipe)
+    ↓
+App & Window Filter ── skip irrelevant apps / blocked windows
+    ↓
+Local LLM (Ollama / Qwen 1.7B) ── fast intent detection
+    ↓
+Deduplication ── avoid duplicate alerts
+    ↓
+Cloud Review (optional, Gemini) ── filter false positives
+    ↓
+Notify ── Desktop / Feishu / Telegram / Webhook / Apple Reminders
 ```
 
-- Two-stage review: actionability validation + content quality check
-- `tasks-raw.md` deduplicates at the local model level to minimize cloud API calls
-- `tasks.md` only contains cloud-reviewed, high-quality tasks
+The pipeline runs every minute. The local model is fast but noisy; enabling cloud review significantly reduces false positives at the cost of an API call per detected item.
 
-## Getting Started
+## Quick Start
 
 ### Prerequisites
 
-- **macOS**
-- [Bun](https://bun.sh/)
-- [Ollama](https://ollama.com/) (default model: `qwen3:1.7b`)
-- [Screenpipe CLI](https://github.com/mediar-ai/screenpipe)
-- [PM2](https://pm2.keymetrics.io/) (`bun install -g pm2`)
+| Dependency | Install |
+|---|---|
+| **macOS** | — |
+| [Bun](https://bun.sh/) | `curl -fsSL https://bun.sh/install \| bash` |
+| [Ollama](https://ollama.com/) | Download from website |
+| [Screenpipe](https://github.com/mediar-ai/screenpipe) | `brew install screenpipe` or download from GitHub |
+| [PM2](https://pm2.keymetrics.io/) | `bun install -g pm2` |
 
-### Setup
+### Install & Run
 
 ```bash
 git clone https://github.com/cyrus-cai/livepipe.git
 cd livepipe
 bun install
 
-# Pull the default LLM model
+# Pull the default local model
 ollama pull qwen3:1.7b
 
-# Copy config templates
+# Create your config files
 cp config.template.json config.json
 cp pipe.template.json pipe.json
-```
 
-### Run
-
-```bash
-# Start dev mode (auto-manages Screenpipe + Ollama via PM2)
+# Start (auto-manages Screenpipe + Ollama via PM2)
 bun run dev
 ```
 
-The dev script will:
-1. Check that Screenpipe, Ollama, and PM2 are installed
+This will:
+1. Check that all dependencies are installed
 2. Start Screenpipe and Ollama as PM2 processes
-3. Launch the Next.js dev server on `http://localhost:3060`
-4. Begin polling screen content and sending notifications
+3. Launch a dashboard at `http://localhost:3060`
+4. Begin monitoring your screen and sending notifications
 
 ### macOS Permissions
 
-Grant your terminal app the following permissions in **System Settings -> Privacy & Security**:
+Grant your terminal the following in **System Settings > Privacy & Security**:
 
-- **Screen Recording** — required by Screenpipe to capture screen content
-- **Notifications** — required for desktop notifications
-- **Automation (Reminders)** — required when `reminders.enabled` is `true`
+- **Screen Recording** — for Screenpipe to capture screen content
+- **Notifications** — for desktop alerts
+- **Automation (Reminders)** — only if `reminders.enabled` is `true`
 
-## Notification Channels
+## Configuration
 
-By default, LivePipe sends macOS desktop notifications via AppleScript.
-You can also enable webhook push to third-party clients (for example Feishu or Telegram) in `pipe.json`:
+All settings live in `pipe.json`. Changes are hot-reloaded — no restart needed.
+
+### App Filtering
+
+Control which apps are monitored:
+
+```json
+{
+  "filter": {
+    "allowedApps": ["Notes", "WeChat", "Slack", "Google Chrome", "..."],
+    "blockedWindows": ["livepipe", "screenpipe"],
+    "minTextLength": 20
+  }
+}
+```
+
+### Cloud Review (Optional)
+
+Add a cloud LLM layer to filter the local model's false positives:
+
+```json
+{
+  "review": {
+    "enabled": true,
+    "provider": "gemini",
+    "model": "gemini-3-flash-preview",
+    "apiKey": "your-google-ai-studio-key",
+    "failOpen": true
+  }
+}
+```
+
+- Two-stage review: actionability validation + content quality check
+- `failOpen: true` means tasks still pass through if the cloud API is down
+
+### Notification Channels
+
+Desktop notifications are on by default. Add webhooks for push to other apps:
 
 ```json
 {
@@ -104,22 +130,18 @@ You can also enable webhook push to third-party clients (for example Feishu or T
         "enabled": true,
         "provider": "generic",
         "url": "https://your-webhook-endpoint.example.com/livepipe",
-        "headers": {
-          "X-Api-Key": "your-secret"
-        }
+        "headers": { "X-Api-Key": "your-secret" }
       }
     ]
   }
 }
 ```
 
-- `provider` supports `feishu`, `telegram`, `generic`
-- `desktop: true` keeps the existing macOS notification
-- `generic` sends a JSON payload with `title`, `body`, `type`, `dueTime`, etc.
+Supported providers: `feishu`, `telegram`, `generic` (sends JSON with `title`, `body`, `type`, `dueTime`).
 
-## Apple Reminders Sync
+### Apple Reminders Sync
 
-LivePipe can also push newly recorded tasks into Apple Reminders (one-way sync only).
+Push detected tasks into Apple Reminders (one-way):
 
 ```json
 {
@@ -130,9 +152,28 @@ LivePipe can also push newly recorded tasks into Apple Reminders (one-way sync o
 }
 ```
 
-- `enabled` defaults to `false` for safety
-- `list` is the target reminders list name (auto-created if missing)
-- Sync is fail-silent and does not block the main pipeline
+- Off by default for safety
+- The target list is auto-created if it doesn't exist
+- Sync is fire-and-forget — failures are logged but don't block the pipeline
+
+### Output Language
+
+Set `outputLanguage` to control the language of detected task output:
+
+```json
+{
+  "outputLanguage": "zh-CN"
+}
+```
+
+## Tech Stack
+
+- **Runtime**: [Bun](https://bun.sh/) + TypeScript
+- **OCR**: [Screenpipe](https://github.com/mediar-ai/screenpipe)
+- **Local LLM**: [Ollama](https://ollama.com/) (default: Qwen 1.7B)
+- **Cloud LLM**: Google Gemini (optional)
+- **Dashboard**: Next.js
+- **Process Manager**: PM2
 
 ## License
 

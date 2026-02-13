@@ -5,64 +5,110 @@
 
 > **Low-Key Preview** — 当前版本不稳定，效果欠佳，仅供研究与测试。
 
-基于 [Screenpipe](https://github.com/mediar-ai/screenpipe) + 本地大模型 ([Ollama](https://ollama.com)) 的实时屏幕内容分析工具。自动监控屏幕内容，检测到待办、提醒、会议、截止时间等可执行事项时发送桌面通知。
+LivePipe 通过 OCR 实时监控你的屏幕，用本地大模型识别其中的可执行事项（待办、提醒、会议、截止日期），然后推送到桌面通知、Webhook 或 Apple Reminders。无需手动输入——正常工作就好，LivePipe 帮你捕捉关键信息。
 
-![LivePipe 通知效果预览](public/preview.png)
+## 工作原理
 
-## THE NEXT STEP
+```
+屏幕 OCR（Screenpipe）
+    ↓
+应用 & 窗口过滤 ── 跳过无关应用 / 屏蔽窗口
+    ↓
+Local LLM（Ollama / Qwen 1.7B）── 快速意图识别
+    ↓
+去重 ── 避免重复提醒
+    ↓
+云端审查（可选，Gemini）── 过滤误报
+    ↓
+通知 ── 桌面 / 飞书 / Telegram / Webhook / Apple Reminders
+```
 
-- [ ] 与 OpenClaw 协同审查识别到的屏幕内容，确认是否输出。
+管道每分钟运行一次。本地模型速度快但噪声较多；开启云端审查可以显著减少误报，代价是每个检测到的事项需要一次 API 调用。
 
-## 开始使用
+## 快速开始
 
 ### 环境依赖
 
-- **macOS**
-- [Bun](https://bun.sh/)
-- [Ollama](https://ollama.com/)（默认模型：`qwen3:1.7b`）
-- [Screenpipe CLI](https://github.com/mediar-ai/screenpipe)
-- [PM2](https://pm2.keymetrics.io/)（`bun install -g pm2`）
+| 依赖 | 安装方式 |
+|---|---|
+| **macOS** | — |
+| [Bun](https://bun.sh/) | `curl -fsSL https://bun.sh/install \| bash` |
+| [Ollama](https://ollama.com/) | 从官网下载 |
+| [Screenpipe](https://github.com/mediar-ai/screenpipe) | `brew install screenpipe` 或从 GitHub 下载 |
+| [PM2](https://pm2.keymetrics.io/) | `bun install -g pm2` |
 
-### 安装
+### 安装 & 运行
 
 ```bash
 git clone https://github.com/cyrus-cai/livepipe.git
 cd livepipe
 bun install
 
-# 拉取默认 LLM 模型
+# 拉取默认本地模型
 ollama pull qwen3:1.7b
 
-# 复制配置模板
+# 创建配置文件
 cp config.template.json config.json
 cp pipe.template.json pipe.json
-```
 
-### 运行
-
-```bash
-# 启动开发模式（通过 PM2 自动管理 Screenpipe + Ollama）
+# 启动（通过 PM2 自动管理 Screenpipe + Ollama）
 bun run dev
 ```
 
-dev 脚本会：
-1. 检查 Screenpipe、Ollama、PM2 是否已安装
+启动后会：
+1. 检查所有依赖是否已安装
 2. 通过 PM2 启动 Screenpipe 和 Ollama
-3. 在 `http://localhost:3060` 启动 Next.js 开发服务器
-4. 开始轮询屏幕内容并发送通知
+3. 在 `http://localhost:3060` 启动 Dashboard
+4. 开始监控屏幕内容并发送通知
 
 ### macOS 权限
 
-在 **系统设置 -> 隐私与安全性** 中为终端应用授予以下权限：
+在 **System Settings > Privacy & Security** 中为终端应用授予以下权限：
 
-- **屏幕录制** — Screenpipe 捕获屏幕内容所需
-- **通知** — 桌面通知所需
-- **自动化（提醒事项）** — 当 `reminders.enabled` 为 `true` 时需要
+- **Screen Recording** — Screenpipe 捕获屏幕内容所需
+- **Notifications** — 桌面通知所需
+- **Automation (Reminders)** — 仅当 `reminders.enabled` 为 `true` 时需要
 
-## 通知通道
+## 配置
 
-默认情况下，LivePipe 通过 AppleScript 发送 macOS 桌面通知。
-你也可以在 `pipe.json` 里开启 Webhook，把消息推送到第三方客户端（例如飞书或 Telegram）：
+所有设置都在 `pipe.json` 中。修改后会热加载，无需重启。
+
+### 应用过滤
+
+控制监控哪些应用：
+
+```json
+{
+  "filter": {
+    "allowedApps": ["Notes", "WeChat", "Slack", "Google Chrome", "..."],
+    "blockedWindows": ["livepipe", "screenpipe"],
+    "minTextLength": 20
+  }
+}
+```
+
+### 云端审查（可选）
+
+添加 Cloud LLM 层来过滤 Local LLM 的误报：
+
+```json
+{
+  "review": {
+    "enabled": true,
+    "provider": "gemini",
+    "model": "gemini-3-flash-preview",
+    "apiKey": "your-google-ai-studio-key",
+    "failOpen": true
+  }
+}
+```
+
+- 两阶段审查：可执行性验证 + 内容质量检查
+- `failOpen: true` 表示云端 API 不可用时任务仍会通过
+
+### 通知通道
+
+默认开启桌面通知。添加 Webhook 推送到其他应用：
 
 ```json
 {
@@ -84,23 +130,18 @@ dev 脚本会：
         "enabled": true,
         "provider": "generic",
         "url": "https://your-webhook-endpoint.example.com/livepipe",
-        "headers": {
-          "X-Api-Key": "your-secret"
-        }
+        "headers": { "X-Api-Key": "your-secret" }
       }
     ]
   }
 }
 ```
 
-- `provider` 支持 `feishu`、`telegram`、`generic`
-- `desktop: true` 会保留原有 macOS 通知
-- `generic` 会发送标准 JSON（含 `title`、`body`、`type`、`dueTime` 等字段）
-- 修改 `pipe.json` 后请重启 `live`
+支持的 provider：`feishu`、`telegram`、`generic`（发送包含 `title`、`body`、`type`、`dueTime` 的 JSON）。
 
-## Apple Reminders 同步
+### Apple Reminders 同步
 
-LivePipe 支持把新写入的任务单向推送到 Apple Reminders。
+将检测到的任务单向推送到 Apple Reminders：
 
 ```json
 {
@@ -111,10 +152,29 @@ LivePipe 支持把新写入的任务单向推送到 Apple Reminders。
 }
 ```
 
-- `enabled` 默认是 `false`（更安全）
-- `list` 是目标提醒列表名（不存在会自动创建）
-- 同步失败只记录日志，不会阻塞主流程
+- 默认关闭，更安全
+- 目标列表不存在时会自动创建
+- 同步采用 fire-and-forget 模式——失败仅记录日志，不阻塞主流程
 
-## 许可证
+### 输出语言
+
+通过 `outputLanguage` 设置检测到的任务的输出语言：
+
+```json
+{
+  "outputLanguage": "zh-CN"
+}
+```
+
+## Tech Stack
+
+- **Runtime**：[Bun](https://bun.sh/) + TypeScript
+- **OCR**：[Screenpipe](https://github.com/mediar-ai/screenpipe)
+- **Local LLM**：[Ollama](https://ollama.com/)（默认：Qwen 1.7B）
+- **Cloud LLM**：Google Gemini（可选）
+- **Dashboard**：Next.js
+- **Process Manager**：PM2
+
+## License
 
 MIT
