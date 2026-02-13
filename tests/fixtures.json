@@ -1,0 +1,247 @@
+[
+  {
+    "id": "chat-hard-001",
+    "category": "chat",
+    "desc": "Group chat with mixed task and chatter",
+    "texts": ["微信工作群 | 32条未读\n先看这个报价\n另外你明天 10:30 前把合同终稿发我\n收到"] ,
+    "sourceApp": "wechat",
+    "expect": { "actionable": true, "type": "deadline", "hasTime": true, "contentLike": "明天10:30前把合同终稿发我" }
+  },
+  {
+    "id": "chat-hard-002",
+    "category": "chat",
+    "desc": "English request with a weak time cue",
+    "texts": ["Slack DM\nWhen you have a minute, please review PR #871 before standup tomorrow."],
+    "sourceApp": "slack",
+    "expect": { "actionable": true, "type": "todo", "hasTime": true, "contentLike": "review PR #871 before standup tomorrow" }
+  },
+  {
+    "id": "chat-hard-003",
+    "category": "chat",
+    "desc": "Quoted example sentence, not an actual task",
+    "texts": ["Telegram\n这句英文怎么翻：\"Remember to submit the report by Friday\"\n我在写教程"],
+    "sourceApp": "telegram",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "chat-hard-004",
+    "category": "chat",
+    "desc": "Explicit no-action instruction",
+    "texts": ["企业微信\n那封邮件不用回了，知会一下就行\nOK"],
+    "sourceApp": "wechat",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "chat-hard-005",
+    "category": "chat",
+    "desc": "Reminder surrounded by noisy text",
+    "texts": ["iMessage\n🔥 2 for 1 pizza tonight\nDon't forget to call the landlord at 8pm about lease renewal\nTapback"],
+    "sourceApp": "imessage",
+    "expect": { "actionable": true, "type": "reminder", "hasTime": true, "contentLike": "call the landlord at 8pm" }
+  },
+
+  {
+    "id": "email-hard-001",
+    "category": "email",
+    "desc": "Email with an explicit delivery deadline",
+    "texts": ["Inbox - Outlook\nSubject: Need final numbers\nPlease send revised KPI sheet by Friday 17:00 (UTC+8).\nThanks"],
+    "sourceApp": "outlook",
+    "expect": { "actionable": true, "type": "deadline", "hasTime": true, "contentLike": "send revised KPI sheet by Friday 17:00" }
+  },
+  {
+    "id": "email-hard-002",
+    "category": "email",
+    "desc": "Advice sentence inside a newsletter",
+    "texts": ["Gmail\nSubject: 10 productivity habits\nRemember to batch your emails and plan your day\nRead full article"],
+    "sourceApp": "gmail",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "email-hard-003",
+    "category": "email",
+    "desc": "Follow-up request without explicit time",
+    "texts": ["Mail\nCould you follow up with Legal on the NDA status and cc me?"],
+    "sourceApp": "mail",
+    "expect": { "actionable": true, "type": "todo", "contentLike": "follow up with Legal on the NDA status" }
+  },
+  {
+    "id": "email-hard-004",
+    "category": "email",
+    "desc": "System notification explicitly says no action needed",
+    "texts": ["GitHub\nDependabot alert resolved automatically. No action needed from you."],
+    "sourceApp": "gmail",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "email-hard-005",
+    "category": "email",
+    "desc": "Meeting cancellation notice",
+    "texts": ["Calendar Notification\nToday's hiring sync at 15:00 is canceled. No follow-up required."],
+    "sourceApp": "gmail",
+    "expect": { "actionable": false }
+  },
+
+  {
+    "id": "calendar-hard-001",
+    "category": "calendar",
+    "desc": "Standard meeting event",
+    "texts": ["Calendar\nDesign Review\nTomorrow 14:00 - 15:00\nJoin via Meet"],
+    "sourceApp": "calendar",
+    "expect": { "actionable": true, "type": "meeting", "hasTime": true, "contentLike": "Design Review Tomorrow 14:00" }
+  },
+  {
+    "id": "calendar-hard-002",
+    "category": "calendar",
+    "desc": "Reminder with an absolute timestamp",
+    "texts": ["Reminders\nPay property tax\n2026-03-01 18:30\nPriority: High"],
+    "sourceApp": "reminders",
+    "expect": { "actionable": true, "type": "deadline", "hasTime": true, "contentLike": "Pay property tax 2026-03-01 18:30" }
+  },
+  {
+    "id": "calendar-hard-003",
+    "category": "calendar",
+    "desc": "Past completed event should not trigger",
+    "texts": ["Calendar\nYesterday 09:00 Standup (Completed)\nAttendance recorded"],
+    "sourceApp": "calendar",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "calendar-hard-004",
+    "category": "calendar",
+    "desc": "Rescheduled event requiring confirmation",
+    "texts": ["Calendar\nClient demo moved to Monday 11:00\nPlease confirm attendance"],
+    "sourceApp": "calendar",
+    "expect": { "actionable": true, "type": "meeting", "hasTime": true, "contentLike": "Client demo moved to Monday 11:00" }
+  },
+  {
+    "id": "calendar-hard-005",
+    "category": "calendar",
+    "desc": "All-day holiday event",
+    "texts": ["Calendar\nLabor Day (All day)\nUS Holidays"],
+    "sourceApp": "calendar",
+    "expect": { "actionable": false }
+  },
+
+  {
+    "id": "noise-hard-001",
+    "category": "noise",
+    "desc": "Settings-page CTA labels",
+    "texts": ["Settings\nRemind me later | Snooze for 1 hour | Dismiss"],
+    "sourceApp": "chrome",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "noise-hard-002",
+    "category": "noise",
+    "desc": "Imperative ad copy in ecommerce page",
+    "texts": ["Weekend Sale\nDon't miss out! Buy now before midnight\nAdd to cart"],
+    "sourceApp": "chrome",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "noise-hard-003",
+    "category": "noise",
+    "desc": "Reminder-like sentence inside article content",
+    "texts": ["Medium\nHow PMs stay focused\n\"Remember to define scope early\" is a common principle."],
+    "sourceApp": "chrome",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "noise-hard-004",
+    "category": "noise",
+    "desc": "Social media poll",
+    "texts": ["X / Poll\nShould teams meet daily?\nVote now"],
+    "sourceApp": "chrome",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "noise-hard-005",
+    "category": "noise",
+    "desc": "In-app modal CTA",
+    "texts": ["Notion\nEnable reminders for this workspace\nEnable | Not now"],
+    "sourceApp": "notion",
+    "expect": { "actionable": false }
+  },
+
+  {
+    "id": "code-hard-001",
+    "category": "code",
+    "desc": "Code TODO comment, not a user task",
+    "texts": ["// TODO: refactor auth middleware before v2\nexport async function handler() { ... }"],
+    "sourceApp": "vscode",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "code-hard-002",
+    "category": "code",
+    "desc": "Natural-language note in PR diff",
+    "texts": ["+ // reminder: retry on 429\n+ const maxRetries = 3;\nFiles changed"],
+    "sourceApp": "github",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "code-hard-003",
+    "category": "code",
+    "desc": "Terminal interactive prompt",
+    "texts": ["Migration pending\nDo you want to continue? [Y/n]\nApplying schema..."],
+    "sourceApp": "terminal",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "code-hard-004",
+    "category": "code",
+    "desc": "Error log containing 'deadline exceeded'",
+    "texts": ["ERROR rpc timeout: context deadline exceeded\nservice=worker-queue"],
+    "sourceApp": "terminal",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "code-hard-005",
+    "category": "code",
+    "desc": "SQL query with a date condition",
+    "texts": ["SELECT * FROM invoices WHERE due_date < NOW() AND status != 'paid';"],
+    "sourceApp": "dbeaver",
+    "expect": { "actionable": false }
+  },
+
+  {
+    "id": "mixed-hard-001",
+    "category": "mixed",
+    "desc": "Ad noise plus real task; extract task only",
+    "texts": ["Flash sale 60% OFF\n记得今晚 9 点前把报销单提交到 OA\nBuy now"],
+    "sourceApp": "chrome",
+    "expect": { "actionable": true, "type": "deadline", "hasTime": true, "contentLike": "今晚9点前把报销单提交到OA" }
+  },
+  {
+    "id": "mixed-hard-002",
+    "category": "mixed",
+    "desc": "OCR noise mixed with a clear task",
+    "texts": ["Sla@@k\nplz 记得 Tue 4pm 跟供应商确认交期 ###\nthread"],
+    "sourceApp": "slack",
+    "expect": { "actionable": true, "type": "meeting", "hasTime": true, "contentLike": "Tue 4pm 跟供应商确认交期" }
+  },
+  {
+    "id": "mixed-hard-003",
+    "category": "mixed",
+    "desc": "Quoted reminder in article/comments, not a task",
+    "texts": ["Article\nPeople say: 'Don't forget to ship every day'\nComments: great tip!"],
+    "sourceApp": "chrome",
+    "expect": { "actionable": false }
+  },
+  {
+    "id": "mixed-hard-004",
+    "category": "mixed",
+    "desc": "Cancellation and new schedule on same screen",
+    "texts": ["Teams\n原定 15:00 评审取消\n改到明天 11:30 线上继续\nJoin"],
+    "sourceApp": "teams",
+    "expect": { "actionable": true, "type": "meeting", "hasTime": true, "contentLike": "改到明天11:30线上继续" }
+  },
+  {
+    "id": "mixed-hard-005",
+    "category": "mixed",
+    "desc": "Promo email containing one actionable request",
+    "texts": ["Inbox\nSuper deal inside\nPlease update the vendor bank info before payment run\nUnsubscribe"],
+    "sourceApp": "gmail",
+    "expect": { "actionable": true, "type": "todo", "contentLike": "update the vendor bank info before payment run" }
+  }
+]

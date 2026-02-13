@@ -77,7 +77,7 @@ export interface DetectOptions {
   hotkeyTriggered?: boolean;
 }
 
-function isGarbled(text: string): boolean {
+export function isGarbled(text: string): boolean {
   if (!text || text.length < 2) return true;
   // Count readable characters (CJK, alphanumeric, common punctuation, spaces)
   const readable = text.match(/[\w\s\u4e00-\u9fff\u3000-\u303f.,;:!?]/g) || [];
@@ -86,13 +86,13 @@ function isGarbled(text: string): boolean {
   return ratio < 0.5;
 }
 
-function isCodeLine(line: string): boolean {
+export function isCodeLine(line: string): boolean {
   const codePatterns = /^(import |export |const |let |var |function |class |if\s*\(|for\s*\(|return |await |async |\{|\}|\/\/|<\/|=>|\.then|\.catch|console\.|npm |bun |curl )/;
   const symbolRatio = (line.match(/[{}();=<>|&]/g) || []).length / Math.max(line.length, 1);
   return codePatterns.test(line.trim()) || symbolRatio > 0.15;
 }
 
-function cleanOcrText(texts: string[]): string {
+export function cleanOcrText(texts: string[]): string {
   const result: string[] = [];
 
   for (const text of texts) {
@@ -113,7 +113,7 @@ function cleanOcrText(texts: string[]): string {
   return combined;
 }
 
-function extractJson(text: string): IntentResult | null {
+export function extractJson(text: string): IntentResult | null {
   // Try to find JSON object
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;

@@ -36,7 +36,7 @@ let rawInitialized = false;
 /**
  * Character bigram overlap (Dice coefficient) — fast and effective for short text.
  */
-function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string): number {
   const la = a.length;
   const lb = b.length;
   if (la === 0 && lb === 0) return 1;
