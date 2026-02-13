@@ -45,6 +45,7 @@ test-pipeline.mjs
 
 # claude
 .claude/
+CLAUDE.md
 
 # LivePipe runtime config (user-specific)
 config.json
