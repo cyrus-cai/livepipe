@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import type { IntentResult } from "./schemas";
+import { syncTaskToReminders } from "./apple-reminders";
 
 const SIMILARITY_THRESHOLD = 0.6;
 const LOOKBACK_DAYS = 7;
@@ -282,6 +283,9 @@ export function recordAndNotify(result: IntentResult): boolean {
 
   taskCache.push(entry);
   appendTaskToFile(entry);
+  void syncTaskToReminders(entry).catch((error) => {
+    console.error("[reminders] sync error:", error);
+  });
 
   return true;
 }

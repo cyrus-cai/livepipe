@@ -57,6 +57,7 @@ dev 脚本会：
 
 - **屏幕录制** — Screenpipe 捕获屏幕内容所需
 - **通知** — 桌面通知所需
+- **自动化（提醒事项）** — 当 `reminders.enabled` 为 `true` 时需要
 
 ## 通知通道
 
@@ -96,6 +97,23 @@ dev 脚本会：
 - `desktop: true` 会保留原有 macOS 通知
 - `generic` 会发送标准 JSON（含 `title`、`body`、`type`、`dueTime` 等字段）
 - 修改 `pipe.json` 后请重启 `live`
+
+## Apple Reminders 同步
+
+LivePipe 支持把新写入的任务单向推送到 Apple Reminders。
+
+```json
+{
+  "reminders": {
+    "enabled": false,
+    "list": "LivePipe"
+  }
+}
+```
+
+- `enabled` 默认是 `false`（更安全）
+- `list` 是目标提醒列表名（不存在会自动创建）
+- 同步失败只记录日志，不会阻塞主流程
 
 ## 许可证
 

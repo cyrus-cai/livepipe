@@ -39,12 +39,18 @@ export interface NotificationConfig {
   webhooks: WebhookConfig[];
 }
 
+export interface RemindersConfig {
+  enabled: boolean;
+  list: string;
+}
+
 export interface PipeConfig {
   filter: FilterConfig;
   capture: CaptureConfig;
   review: ReviewConfig;
   outputLanguage: string;
   notification: NotificationConfig;
+  reminders: RemindersConfig;
 }
 
 export interface EffectiveConfigSnapshot {
@@ -98,6 +104,11 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
 const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
   desktop: true,
   webhooks: [],
+};
+
+const DEFAULT_REMINDERS_CONFIG: RemindersConfig = {
+  enabled: false,
+  list: "LivePipe",
 };
 
 const DEFAULT_OUTPUT_LANGUAGE = "zh-CN";
@@ -187,6 +198,12 @@ const pipeConfigSchema = z
         webhooks: z.array(webhookSchema).default(DEFAULT_NOTIFICATION_CONFIG.webhooks),
       })
       .default(DEFAULT_NOTIFICATION_CONFIG),
+    reminders: z
+      .object({
+        enabled: z.boolean().default(DEFAULT_REMINDERS_CONFIG.enabled),
+        list: z.string().trim().min(1, "must be a non-empty string").default(DEFAULT_REMINDERS_CONFIG.list),
+      })
+      .default(DEFAULT_REMINDERS_CONFIG),
   })
   .passthrough();
 
@@ -202,6 +219,8 @@ const HOT_RELOAD_FIELDS = new Set([
   "outputLanguage",
   "notification.desktop",
   "notification.webhooks",
+  "reminders.enabled",
+  "reminders.list",
 ]);
 
 const RESTART_REQUIRED_FIELDS = new Set(["capture.mode", "capture.hotkeyHoldMs"]);
@@ -230,7 +249,7 @@ function readPipeConfigFileOrThrow(): string {
   }
 }
 
-function parsePipeConfigTextOrThrow(text: string): PipeConfig {
+export function parsePipeConfigTextOrThrow(text: string): PipeConfig {
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(text);
@@ -267,6 +286,8 @@ function getComparableFields(config: PipeConfig): Record<string, unknown> {
     outputLanguage: config.outputLanguage,
     "notification.desktop": config.notification.desktop,
     "notification.webhooks": config.notification.webhooks,
+    "reminders.enabled": config.reminders.enabled,
+    "reminders.list": config.reminders.list,
   };
 }
 

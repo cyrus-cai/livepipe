@@ -77,6 +77,7 @@ Grant your terminal app the following permissions in **System Settings -> Privac
 
 - **Screen Recording** — required by Screenpipe to capture screen content
 - **Notifications** — required for desktop notifications
+- **Automation (Reminders)** — required when `reminders.enabled` is `true`
 
 ## Notification Channels
 
@@ -115,6 +116,23 @@ You can also enable webhook push to third-party clients (for example Feishu or T
 - `provider` supports `feishu`, `telegram`, `generic`
 - `desktop: true` keeps the existing macOS notification
 - `generic` sends a JSON payload with `title`, `body`, `type`, `dueTime`, etc.
+
+## Apple Reminders Sync
+
+LivePipe can also push newly recorded tasks into Apple Reminders (one-way sync only).
+
+```json
+{
+  "reminders": {
+    "enabled": false,
+    "list": "LivePipe"
+  }
+}
+```
+
+- `enabled` defaults to `false` for safety
+- `list` is the target reminders list name (auto-created if missing)
+- Sync is fail-silent and does not block the main pipeline
 
 ## License
 

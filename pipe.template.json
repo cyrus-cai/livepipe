@@ -66,5 +66,9 @@
         "chatId": "<chat-id>"
       }
     ]
+  },
+  "reminders": {
+    "enabled": false,
+    "list": "LivePipe"
   }
 }
