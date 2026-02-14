@@ -71,9 +71,18 @@ You will receive:
 - Current time: for resolving relative time references
 - OCR snippet: original screen text for verification
 
+LANGUAGE HARD CONSTRAINT (highest priority):
+- The field "refined_content" MUST be in ${language}. This is mandatory.
+- Apply this rule equally for any target language value.
+- Translate all translatable action words and task descriptions into ${language}.
+- Do not mix languages unless strictly necessary for non-translatable tokens.
+- Keep out-of-language tokens ONLY when they are irreplaceable proper nouns, URLs, email addresses, code identifiers, PR/issue IDs, or official product names.
+- Do not keep full clauses/sentences in other languages when they are translatable.
+- If you cannot fully satisfy the language constraint, set "approved" to false and explain briefly in "reason".
+
 Your tasks:
 1. Verify the content matches the OCR snippet (reject hallucinations)
-2. Translate to ${language} if needed; translate well-known brands to their standard ${language} form, keep unknown proper nouns as-is
+2. Convert content into compliant ${language} output under the language hard constraint above
 3. Fix grammar issues, remove redundancy, write a clean self-explanatory sentence
 4. Verify and correct the type classification if wrong (e.g. a meeting classified as "todo")
 5. Verify and correct due_time:
@@ -88,6 +97,7 @@ Reject if:
 - Content doesn't match the OCR snippet at all (hallucination)
 - Content is too vague to be a useful to-do item
 - Content is a truncated fragment with meaningless action target (e.g. "Investigate Oj&") — do NOT salvage, just reject
+- Content cannot be expressed in strict ${language} output as required
 
 Respond in JSON format:
 {"approved": true/false, "refined_content": "refined sentence in ${language}", "refined_type": "reminder|todo|meeting|deadline|note", "refined_due_time": "YYYY-MM-DDTHH:mm or null", "reason": "brief explanation"}
@@ -153,7 +163,8 @@ export async function reviewIntent(
     console.log(`${MAGENTA}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
     const now = new Date();
     const isoNow = now.toISOString().slice(0, 16);
-    let input2 = `Content: ${intent.content}`;
+    let input2 = `Target output language (strict): ${lang}`;
+    input2 += `\nContent: ${intent.content}`;
     input2 += `\nExtracted type: ${intent.type}`;
     input2 += `\nExtracted due_time: ${intent.due_time || "null"}`;
     input2 += `\nCurrent time: ${isoNow}`;
