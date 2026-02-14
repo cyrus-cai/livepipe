@@ -10,9 +10,13 @@ LOG_FILE="$OUTPUT_DIR/$TIMESTAMP.txt"
 
 echo "Running tests and logging to $LOG_FILE"
 
-# Run tests and pipe output to both console and file
-# redirect stderr to stdout so we capture errors too
-bun test tests/ 2>&1 | tee "$LOG_FILE"
+# Run tests, pipe to stdout (for user to see) and capture to a temp file
+TEMP_LOG="$OUTPUT_DIR/temp_raw_output.txt"
+bun test tests/ 2>&1 | tee "$TEMP_LOG"
 
-# Extract just the relevant metrics if needed, or keep the whole log
-# For now, keeping the whole log is safer for debugging.
+# Post-process the log: filter out [eval] lines and the specific header
+# preserving only the final results and other test output
+grep -v "\[eval\]" "$TEMP_LOG" | grep -v "=== Intent Detection Evaluation ===" > "$LOG_FILE"
+
+# Clean up
+rm "$TEMP_LOG"
