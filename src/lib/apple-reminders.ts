@@ -223,13 +223,8 @@ export function normalizeDueDateForReminder(dueTime: string | null): string | un
   return parsed.toISOString();
 }
 
-function buildReminderBody(entry: ReminderSyncEntry): string {
-  const bodyParts = [`type:${entry.type}`];
-  if (entry.dueTime) {
-    bodyParts.push(`due:${entry.dueTime}`);
-  }
-  bodyParts.push(`detected:${entry.detected}`);
-  return bodyParts.join(" | ");
+function buildReminderBody(_entry: ReminderSyncEntry): string | undefined {
+  return undefined;
 }
 
 export async function syncTaskToReminders(entry: ReminderSyncEntry): Promise<void> {
