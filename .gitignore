@@ -55,3 +55,6 @@ tasks-raw.md
 
 # Swift helper build artifacts
 swift-helper/
+
+# Test results
+tests/test-results/

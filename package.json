@@ -6,7 +6,7 @@
     "dev": "bun scripts/dev.ts",
     "build": "next build",
     "start": "next start --port 3060",
-    "test:eval": "bun test tests/"
+    "test": "sh scripts/test-and-log.sh"
   },
   "dependencies": {
     "@screenpipe/js": "1.0.21",
