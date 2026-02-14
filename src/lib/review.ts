@@ -49,6 +49,8 @@ Common false positives from the small model:
 - Code comments or TODO markers misidentified as user tasks
 - Ads or recommended content misidentified as reminders
 - Hallucinated tasks that don't match the OCR snippet at all
+- Incomplete/truncated fragments: an action verb followed by gibberish, random characters, or meaningless fragments (e.g. "Investigate Oj&", "Check xK#2", "Review @@") — these are OCR artifacts, NOT real tasks
+- Content where the object of the action is unintelligible or missing — a real task must have a clear, understandable target (e.g. "Investigate the bug" is valid, "Investigate Oj&" is NOT)
 
 Respond in JSON format:
 {"approved": true/false, "reason": "brief explanation"}
@@ -73,6 +75,7 @@ Reject if:
 - Content is garbled, incomprehensible, or contains OCR artifacts
 - Content doesn't match the OCR snippet at all (hallucination)
 - Content is too vague to be a useful to-do item
+- Content is a truncated fragment where the action target is meaningless or missing (e.g. "Investigate Oj&", "Review xK#") — do NOT try to salvage these, just reject
 
 Respond in JSON format:
 {"approved": true/false, "refined_content": "refined sentence in ${language} (if approved)", "reason": "brief explanation"}
