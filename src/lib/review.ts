@@ -62,23 +62,35 @@ Respond ONLY with JSON, no other text.`;
  * Take the raw extracted text and produce a clean, natural to-do sentence in the target language.
  */
 function buildQualityPrompt(language: string): string {
-  return `You are a to-do content refiner. You receive raw text extracted from a screen by a small model, along with an OCR snippet for context. Your job is to produce a clean, natural to-do sentence in ${language}.
+  return `You are a to-do quality reviewer. You receive a task extracted by a small model from screen OCR, along with context. Your job is to produce the final, polished output in ${language}.
+
+You will receive:
+- Content: the raw extracted task text
+- Extracted type: the small model's classification (reminder/todo/meeting/deadline/note)
+- Extracted due_time: the small model's parsed time (ISO 8601 or null)
+- Current time: for resolving relative time references
+- OCR snippet: original screen text for verification
 
 Your tasks:
-1. Verify the content matches the OCR snippet (reject hallucinations or text that doesn't match)
-2. Translate to ${language} if the original is in a different language
-3. Write a complete, self-explanatory sentence (who/what/when as applicable)
-4. Translate well-known brand/proper names to their standard ${language} form if one exists
-5. Keep unknown proper nouns in their original form — do NOT invent translations
+1. Verify the content matches the OCR snippet (reject hallucinations)
+2. Translate to ${language} if needed; translate well-known brands to their standard ${language} form, keep unknown proper nouns as-is
+3. Fix grammar issues, remove redundancy, write a clean self-explanatory sentence
+4. Verify and correct the type classification if wrong (e.g. a meeting classified as "todo")
+5. Verify and correct due_time:
+   - If the small model missed a time that exists in the OCR, extract it
+   - If the small model got the time wrong, fix it
+   - Convert relative times ("明天", "tomorrow", "Friday") to absolute ISO 8601 using the provided current time
+   - All due_time must be AFTER current time; if resolved time is in the past, push to next occurrence
+   - If no time is mentioned at all, set to null
 
 Reject if:
 - Content is garbled, incomprehensible, or contains OCR artifacts
 - Content doesn't match the OCR snippet at all (hallucination)
 - Content is too vague to be a useful to-do item
-- Content is a truncated fragment where the action target is meaningless or missing (e.g. "Investigate Oj&", "Review xK#") — do NOT try to salvage these, just reject
+- Content is a truncated fragment with meaningless action target (e.g. "Investigate Oj&") — do NOT salvage, just reject
 
 Respond in JSON format:
-{"approved": true/false, "refined_content": "refined sentence in ${language} (if approved)", "reason": "brief explanation"}
+{"approved": true/false, "refined_content": "refined sentence in ${language}", "refined_type": "reminder|todo|meeting|deadline|note", "refined_due_time": "YYYY-MM-DDTHH:mm or null", "reason": "brief explanation"}
 
 Respond ONLY with JSON, no other text.`;
 }
@@ -139,7 +151,12 @@ export async function reviewIntent(
     const lang = context?.language || "zh-CN";
     console.log(`${BOLD}${MAGENTA}[review] ☁️  CLOUD API CALL — stage 2: content refinement (${lang})${RESET}`);
     console.log(`${MAGENTA}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
+    const now = new Date();
+    const isoNow = now.toISOString().slice(0, 16);
     let input2 = `Content: ${intent.content}`;
+    input2 += `\nExtracted type: ${intent.type}`;
+    input2 += `\nExtracted due_time: ${intent.due_time || "null"}`;
+    input2 += `\nCurrent time: ${isoNow}`;
     if (context?.textSnippet) {
       input2 += `\nOCR snippet: ${context.textSnippet}`;
     }
@@ -157,16 +174,36 @@ export async function reviewIntent(
       return { ...intent, actionable: false };
     }
 
-    // Use refined content if provided
-    if (result2?.refined_content && typeof result2.refined_content === "string") {
-      const refined = result2.refined_content.substring(0, 200);
-      if (refined !== intent.content) {
-        console.log(`${YELLOW}[review] ✎ refined: "${intent.content.substring(0, 30)}" → "${refined.substring(0, 30)}"${RESET}`);
-        return { ...intent, content: refined };
+    // Apply refined fields from Gemini, falling back to small model values
+    if (result2) {
+      const validTypes = ["reminder", "todo", "meeting", "deadline", "note"];
+      const refinedContent = typeof result2.refined_content === "string"
+        ? result2.refined_content.substring(0, 200)
+        : intent.content;
+      const refinedType = typeof result2.refined_type === "string" && validTypes.includes(result2.refined_type as string)
+        ? (result2.refined_type as IntentResult["type"])
+        : intent.type;
+      const refinedDueTime = result2.refined_due_time === null
+        ? null
+        : typeof result2.refined_due_time === "string" && result2.refined_due_time !== "null"
+          ? result2.refined_due_time as string
+          : intent.due_time;
+
+      const changed: string[] = [];
+      if (refinedContent !== intent.content) changed.push("content");
+      if (refinedType !== intent.type) changed.push(`type:${intent.type}→${refinedType}`);
+      if (refinedDueTime !== intent.due_time) changed.push(`due:${intent.due_time}→${refinedDueTime}`);
+
+      if (changed.length > 0) {
+        console.log(`${YELLOW}[review] ✎ refined [${changed.join(", ")}]: "${refinedContent.substring(0, 40)}"${RESET}`);
+      } else {
+        console.log(`${GREEN}[review] ✓ stage 2 passed (no changes): ${result2.reason || "ok"}${RESET}`);
       }
+
+      return { ...intent, content: refinedContent, type: refinedType, due_time: refinedDueTime };
     }
 
-    console.log(`${GREEN}[review] ✓ stage 2 passed: ${result2?.reason || "ok"}${RESET}`);
+    console.log(`${GREEN}[review] ✓ stage 2 passed: ok${RESET}`);
     return intent;
   } catch (err) {
     console.error(`${RED}[review] stage 2 error:${RESET}`, err);
