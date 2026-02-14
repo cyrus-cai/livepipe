@@ -6,12 +6,12 @@ mkdir -p "$OUTPUT_DIR"
 
 # Generate timestamp for log filename
 TIMESTAMP=$(date +"%Y-%m-%d-%H%M%S")
-LOG_FILE="$OUTPUT_DIR/$TIMESTAMP.txt"
+LOG_FILE="$OUTPUT_DIR/$TIMESTAMP.md"
 
 echo "Running tests and logging to $LOG_FILE"
 
 # Run tests, pipe to stdout (for user to see) and capture to a temp file
-TEMP_LOG="$OUTPUT_DIR/temp_raw_output.txt"
+TEMP_LOG="$OUTPUT_DIR/temp_raw_output.md"
 bun test tests/ 2>&1 | tee "$TEMP_LOG"
 
 # Post-process the log: filter out [eval] lines and the specific header

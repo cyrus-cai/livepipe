@@ -2,45 +2,47 @@ import type { IntentResult } from "./schemas";
 import type { Batch } from "./batch-aggregator";
 import { DEFAULT_OLLAMA_MODEL, OLLAMA_CHAT_URL } from "./constants";
 
-const SYSTEM_PROMPT = `You are a screen text filter. Your job is to decide if the text contains a human task, and if so, extract the relevant original text. Do NOT rewrite, translate, or summarize — just extract.
+const SYSTEM_PROMPT = `You are a strict task detector for OCR screen text. Decide whether there is a REAL user-actionable item. Do NOT rewrite, translate, or summarize.
 
 Your decisions:
-1. "actionable": Is there a real task/reminder/meeting/deadline here?
-2. "type": What kind? (reminder/todo/meeting/deadline/note)
-3. "content": Extract the ORIGINAL phrase(s) from the screen text that describe the task. Keep the original language and wording. Remove surrounding noise/UI but preserve the task text as-is.
-4. "due_time": Parse any time reference into ISO format.
+1. "actionable": true only for real tasks/reminders/meetings/deadlines.
+2. "type": reminder/todo/meeting/deadline/note
+3. "content": extract the ORIGINAL task phrase only (keep original language).
+4. "due_time": parse time to ISO when possible.
 
-NOT actionable (always false):
-- Pure code, logs, error messages, stack traces
-- Pure UI labels, navigation, app chrome
-- News/articles being READ (not tasks someone WROTE)
+Hard non-task rules (higher priority):
+- Quoted/translation/example context is NOT a task: "这句...怎么翻", "people say", tutorials, principles, tips.
+- Article/newsletter/poll/ad/CTA/UI text is NOT a task UNLESS there is a separate explicit assigned action sentence.
+- App chrome/buttons/options are NOT tasks: "Remind me later", "Enable | Not now", "Vote now", "Add to cart".
+- Code/log/terminal/system prompts are NOT tasks, including code comments/diffs such as "// reminder: retry on 429", "const ...", "Files changed".
+- Explicit no-action statements are NOT tasks: "不用回了", "no action needed", "no follow-up required".
+- "canceled" + "no follow-up required" means NOT actionable.
+- Past/completed-only items are NOT tasks: "Yesterday ... (Completed)".
 
-Actionable (true):
-- Reminders: "remind me...", "don't forget...", "记得...", "别忘了..."
-- Todos: "need to...", "要做...", "待办...", "buy...", "购买..."
-- Meetings/deadlines: any event with a time
-- Tasks: any imperative action item
+Task rules (apply only if non-task rules above do not match):
+- Direct request assigned to user with concrete action object is actionable:
+  "please update vendor bank info...", "could you follow up with Legal...", "don't forget to call the landlord at 8pm".
+- Personal commitments are actionable: "我需要...", "记得...", "别忘了...", "need to...".
+- Meetings/deadlines with a real future schedule are actionable.
+- If cancellation + new time both appear, use the NEW schedule as actionable.
+- In mixed text (noise + one task sentence), actionable=true and extract only that task sentence.
+- Explicit directive sentences win over nearby promo noise:
+  "记得今晚9点前把报销单提交到OA", "plz 记得 Tue 4pm 跟供应商确认交期", "Please update the vendor bank info before payment run".
+
+Tie-break:
+- If uncertain, choose actionable=false.
+- Do NOT convert generic advice into a task unless it is clearly assigned.
 
 CRITICAL rules for "content":
-- EXTRACT the original task text from the screen, do NOT rewrite or translate it
-- Remove noise (UI elements, code, unrelated text) but keep the task phrase intact
-- If the original is English, keep it in English. If Chinese, keep Chinese. Do NOT translate.
-- You may lightly trim or combine fragments, but preserve original wording
-- Maximum 200 characters
-- Examples:
-  * Screen: "Settings | Profile | Remind me to order Haidilao at 11AM | Logout"
-    → content: "Remind me to order Haidilao at 11AM"
-  * Screen: "消息列表 记得明天下午交报告 已读"
-    → content: "记得明天下午交报告"
-  * Screen: "TODO: fix bug #123 before release"
-    → content: "fix bug #123 before release"
+- Extract original wording only; no translation.
+- Keep only task phrase; remove unrelated noise.
+- Maximum 200 characters.
 
 CRITICAL rules for "due_time":
 - ISO 8601 format: "YYYY-MM-DDTHH:mm"
-- Current date/time will be provided. All due_time must be AFTER current time.
-- Convert relative expressions: "明天下午3点" → next day 15:00, "at 11AM" → today 11:00
-- If resolved time is in the past, push to next day
-- If no time mentioned, set to null
+- Current date/time will be provided. due_time must be AFTER current time.
+- Convert relative expressions. If resolved time is in the past, push to next day.
+- If no time mentioned, set null.
 
 Respond ONLY with JSON:
 {"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
