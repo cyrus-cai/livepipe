@@ -9,6 +9,37 @@ interface GeminiConfig {
   model: string;
 }
 
+function summarizeText(text: string, limit = 500): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "(empty)";
+  return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+}
+
+function buildProviderError(
+  message: string,
+  meta?: {
+    reason?: string;
+    status?: number;
+    responseText?: string;
+    cause?: unknown;
+  }
+): Error {
+  const err = new Error(message);
+  const target = err as Error & {
+    reason?: string;
+    provider?: string;
+    status?: number;
+    responseText?: string;
+    cause?: unknown;
+  };
+  target.provider = "gemini";
+  if (meta?.reason) target.reason = meta.reason;
+  if (typeof meta?.status === "number") target.status = meta.status;
+  if (meta?.responseText) target.responseText = meta.responseText;
+  if (meta?.cause) target.cause = meta.cause;
+  return err;
+}
+
 export function createGeminiProvider(config: GeminiConfig): LlmProvider {
   const model = config.model;
 
@@ -49,21 +80,43 @@ export function createGeminiProvider(config: GeminiConfig): LlmProvider {
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         const t0 = Date.now();
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+        } catch (error) {
+          throw buildProviderError("Gemini API network error", {
+            reason: "network_error",
+            cause: error,
+          });
+        }
 
         const latency = Date.now() - t0;
 
         if (!res.ok) {
+          const raw = await res.text().catch(() => "");
+          const responseText = summarizeText(raw);
           if (res.status === 429) {
-            throw new Error(`Gemini API rate limited (${latency}ms) — retry later`);
+            throw buildProviderError(`Gemini API rate limited (${latency}ms) — retry later`, {
+              reason: "rate_limited",
+              status: res.status,
+              responseText,
+            });
           } else if (res.status === 401 || res.status === 403) {
-            throw new Error(`Gemini API auth failed (${res.status}) — check API key`);
+            throw buildProviderError(`Gemini API auth failed (${res.status}) — check API key`, {
+              reason: "auth_failed",
+              status: res.status,
+              responseText,
+            });
           } else {
-            throw new Error(`Gemini API error ${res.status} (${latency}ms)`);
+            throw buildProviderError(`Gemini API error ${res.status} (${latency}ms)`, {
+              reason: "http_error",
+              status: res.status,
+              responseText,
+            });
           }
         }
 

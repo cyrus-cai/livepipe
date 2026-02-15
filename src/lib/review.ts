@@ -22,10 +22,60 @@ export interface ReviewIntentOutcome {
   review: ReviewResult;
 }
 
+export interface ReviewFailureMeta {
+  stage: "stage1" | "stage2";
+  reason: string;
+  provider?: string;
+  status?: number;
+  response?: string;
+}
+
+export class ReviewExecutionError extends Error {
+  readonly meta: ReviewFailureMeta;
+
+  constructor(meta: ReviewFailureMeta, cause?: unknown) {
+    super(`[${meta.stage}] ${meta.reason}`);
+    this.name = "ReviewExecutionError";
+    this.meta = meta;
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
 function summarizeRawResponse(text: string, limit = 500): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (!flat) return "(empty)";
   return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+}
+
+function wrapReviewError(stage: "stage1" | "stage2", err: unknown): ReviewExecutionError {
+  const source = err as {
+    reason?: unknown;
+    provider?: unknown;
+    status?: unknown;
+    responseText?: unknown;
+  };
+  const reason = typeof source.reason === "string"
+    ? source.reason
+    : err instanceof Error
+      ? err.message
+      : String(err);
+  const provider = typeof source.provider === "string" ? source.provider : undefined;
+  const status = typeof source.status === "number" ? source.status : undefined;
+  const response = typeof source.responseText === "string"
+    ? summarizeRawResponse(source.responseText)
+    : undefined;
+  return new ReviewExecutionError(
+    {
+      stage,
+      reason,
+      provider,
+      status,
+      response,
+    },
+    err,
+  );
 }
 
 /**
@@ -178,7 +228,7 @@ export async function reviewIntent(
     }
   } catch (err) {
     debugError("[review] stage1 error:", err);
-    throw err;
+    throw wrapReviewError("stage1", err);
   }
 
   // Stage 2: Refine content
@@ -298,6 +348,6 @@ export async function reviewIntent(
     };
   } catch (err) {
     debugError("[review] stage2 error:", err);
-    throw err;
+    throw wrapReviewError("stage2", err);
   }
 }

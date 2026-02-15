@@ -10,7 +10,7 @@ import {
   loadMemoRawFromFile,
 } from "@/lib/deduplication";
 import { sendNotification } from "@/lib/notifier";
-import { reviewIntent, type ReviewContext } from "@/lib/review";
+import { ReviewExecutionError, reviewIntent, type ReviewContext } from "@/lib/review";
 import { createGeminiProvider } from "@/lib/providers/gemini";
 import type { LlmProvider } from "@/lib/llm-provider";
 import type { IntentResult } from "@/lib/schemas";
@@ -170,6 +170,47 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function summarizeForLog(value: unknown, limit = 500): string {
+  if (value == null) return "(none)";
+  const text = typeof value === "string" ? value : String(value);
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "(empty)";
+  return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+}
+
+function getReviewFailureLog(error: unknown): {
+  headline: string;
+  stage: string;
+  reason: string;
+  provider: string;
+  status: string;
+  response: string;
+} {
+  if (error instanceof ReviewExecutionError) {
+    const causeText = error.cause != null ? summarizeForLog(error.cause) : "";
+    const reason = causeText && causeText !== error.meta.reason
+      ? `${error.meta.reason}; cause=${causeText}`
+      : error.meta.reason;
+    return {
+      headline: error.message,
+      stage: error.meta.stage,
+      reason,
+      provider: error.meta.provider || "(unknown)",
+      status: typeof error.meta.status === "number" ? String(error.meta.status) : "(none)",
+      response: error.meta.response || "(none)",
+    };
+  }
+
+  return {
+    headline: getErrorMessage(error),
+    stage: "(unknown)",
+    reason: getErrorMessage(error),
+    provider: "(unknown)",
+    status: "(none)",
+    response: "(none)",
+  };
+}
+
 async function processIntent(
   intent: IntentResult,
   logger: PipelineLogger,
@@ -289,9 +330,12 @@ async function processIntent(
 
     logger.notify(notifySummary);
   } catch (error) {
-    const message = getErrorMessage(error);
     debugError("[poll] review error:", error);
-    logger.info(`④ REVIEW  error: ${message}`);
+    const failure = getReviewFailureLog(error);
+    logger.info(`④ REVIEW  error: ${failure.headline}`);
+    logger.info(`④ REVIEW  stage=${failure.stage}, provider=${failure.provider}, status=${failure.status}`);
+    logger.info(`④ REVIEW  reason=${failure.reason}`);
+    logger.info(`④ REVIEW  response=${failure.response}`);
 
     if (!reviewConfig.failOpen) {
       return;
