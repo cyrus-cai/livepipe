@@ -37,7 +37,6 @@ let TIMESTAMP_SKEW_TOLERANCE_MS = 0;
 let isRunning = false;
 let lastText = "";
 let noDataCount = 0;
-let isFirstPoll = true;
 let pollSeq = 0;
 let hotkeySeq = 0;
 
@@ -693,16 +692,6 @@ async function runPipeline() {
         }
 
         const combined = data.texts.join("\n");
-
-        // First poll: just set baseline, don't process stale screenpipe data
-        if (isFirstPoll) {
-          isFirstPoll = false;
-          lastText = combined.trim();
-          logger.info(`② BASELINE first poll — set baseline (${lastText.length} chars), skipped`);
-          logger.flush();
-          await sleep(POLL_INTERVAL_MS);
-          continue;
-        }
 
         const change = detectChange(combined);
         if (!change.changedText) {
