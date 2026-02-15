@@ -16,6 +16,9 @@ export interface FilterConfig {
 export interface CaptureConfig {
   mode: CaptureMode;
   hotkeyHoldMs: number;
+  pollIntervalMs: number;
+  lookbackMs: number;
+  timestampSkewToleranceMs: number;
 }
 
 export interface ReviewConfig {
@@ -101,7 +104,7 @@ const DEFAULT_FILTER_CONFIG: FilterConfig = {
   minTextLength: 20,
 };
 
-const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
+const DEFAULT_CAPTURE_CONFIG: Pick<CaptureConfig, "mode" | "hotkeyHoldMs"> = {
   mode: "always",
   hotkeyHoldMs: 500,
 };
@@ -176,8 +179,19 @@ const pipeConfigSchema = z
           .int("must be an integer")
           .min(1, "must be >= 1")
           .default(DEFAULT_CAPTURE_CONFIG.hotkeyHoldMs),
-      })
-      .default(DEFAULT_CAPTURE_CONFIG),
+        pollIntervalMs: z
+          .number()
+          .int("must be an integer")
+          .min(1000, "must be >= 1000"),
+        lookbackMs: z
+          .number()
+          .int("must be an integer")
+          .min(1000, "must be >= 1000"),
+        timestampSkewToleranceMs: z
+          .number()
+          .int("must be an integer")
+          .min(0, "must be >= 0"),
+      }),
     review: z
       .object({
         enabled: z.boolean().default(DEFAULT_REVIEW_CONFIG.enabled),
@@ -260,6 +274,9 @@ const HOT_RELOAD_FIELDS = new Set([
   "filter.allowedApps",
   "filter.blockedWindows",
   "filter.minTextLength",
+  "capture.pollIntervalMs",
+  "capture.lookbackMs",
+  "capture.timestampSkewToleranceMs",
   "review.enabled",
   "review.provider",
   "review.model",
@@ -332,6 +349,9 @@ function getComparableFields(config: PipeConfig): Record<string, unknown> {
     "filter.minTextLength": config.filter.minTextLength,
     "capture.mode": config.capture.mode,
     "capture.hotkeyHoldMs": config.capture.hotkeyHoldMs,
+    "capture.pollIntervalMs": config.capture.pollIntervalMs,
+    "capture.lookbackMs": config.capture.lookbackMs,
+    "capture.timestampSkewToleranceMs": config.capture.timestampSkewToleranceMs,
     "review.enabled": config.review.enabled,
     "review.provider": config.review.provider,
     "review.model": config.review.model,

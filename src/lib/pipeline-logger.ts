@@ -28,6 +28,7 @@ export interface FetchResult {
   skippedWindow: number;
   skippedShort: number;
   skippedDedup: number;
+  skippedTime?: number;
 }
 
 export interface IntentInfo {
@@ -58,6 +59,7 @@ export interface ReviewResult {
   finalContent?: string;
   finalDueTime?: string | null;
   rejected?: boolean;
+  source?: string;
 }
 
 export interface NotifyResult {
@@ -105,6 +107,7 @@ export class PipelineLogger {
     if (r.skippedWindow > 0) filters.push(`win:−${r.skippedWindow}`);
     if (r.skippedShort > 0) filters.push(`short:−${r.skippedShort}`);
     if (r.skippedDedup > 0) filters.push(`dup:−${r.skippedDedup}`);
+    if ((r.skippedTime ?? 0) > 0) filters.push(`time:−${r.skippedTime}`);
     const filterStr = filters.length > 0 ? ` (${filters.join(" ")})` : "";
     this.lines.push(
       `│ ① FETCH   ${r.totalItems} items → ${r.keptItems} kept [${r.apps.join(", ")}] ${r.chars} chars${filterStr}`
@@ -122,7 +125,7 @@ export class PipelineLogger {
     if (r.urgent) flags.push("urgent");
     this.lines.push(`│ ② INTENT  ${flags.join(" ")} (${r.latencyMs}ms)`);
     if (r.content) {
-      this.lines.push(`│            "${r.content.substring(0, 70)}${r.content.length > 70 ? "..." : ""}"`);
+      this.lines.push(`│            "${r.content}"`);
     }
     if (r.dueTime) {
       this.lines.push(`│            due=${r.dueTime}`);
@@ -152,15 +155,16 @@ export class PipelineLogger {
 
   /** ④ Cloud review stages */
   review(r: ReviewResult): void {
+    const sourceTag = r.source ? `[${r.source}] ` : "";
     for (const s of r.stages) {
       const icon = s.stage === 1 ? `${CYAN}stage1${RESET}` : `${CYAN}stage2${RESET}`;
-      this.lines.push(`│ ④ REVIEW  ${icon}: ${s.outcome} (${s.latencyMs}ms)`);
+      this.lines.push(`│ ④ REVIEW  ${sourceTag}${icon}: ${s.outcome} (${s.latencyMs}ms)`);
     }
     if (r.rejected) {
       this.lines.push(`│ ④ REVIEW  ${RED}✗ rejected${RESET}`);
     } else if (r.finalContent) {
       this.lines.push(
-        `│            → "${r.finalContent.substring(0, 60)}${r.finalContent.length > 60 ? "..." : ""}"${r.finalDueTime ? ` due=${r.finalDueTime}` : ""}`
+        `│            → "${r.finalContent}"${r.finalDueTime ? ` due=${r.finalDueTime}` : ""}`
       );
     }
   }

@@ -42,7 +42,10 @@
   "outputLanguage": "zh-CN",
   "capture": {
     "mode": "always",
-    "hotkeyHoldMs": 500
+    "hotkeyHoldMs": 500,
+    "pollIntervalMs": 12000,
+    "lookbackMs": 24000,
+    "timestampSkewToleranceMs": 2000
   },
   "review": {
     "enabled": false,

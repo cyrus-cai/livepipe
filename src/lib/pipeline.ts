@@ -30,8 +30,9 @@ import {
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
-let POLL_INTERVAL_MS = 35_000;
-let LOOKBACK_MS = 60_000;
+let POLL_INTERVAL_MS = 0;
+let LOOKBACK_MS = 0;
+let TIMESTAMP_SKEW_TOLERANCE_MS = 0;
 
 let isRunning = false;
 let lastText = "";
@@ -68,6 +69,9 @@ function applyRuntimeConfig(config: PipeConfig, options?: { resetReviewProvider?
   filterConfig = config.filter;
   reviewConfig = config.review;
   outputLanguage = config.outputLanguage;
+  POLL_INTERVAL_MS = Math.max(captureConfig.pollIntervalMs, 1000);
+  LOOKBACK_MS = Math.max(captureConfig.lookbackMs, POLL_INTERVAL_MS);
+  TIMESTAMP_SKEW_TOLERANCE_MS = Math.max(captureConfig.timestampSkewToleranceMs, 0);
   allowedAppsLower = new Set(filterConfig.allowedApps.map((app) => app.toLowerCase()));
   blockedWindowsLower = filterConfig.blockedWindows.map((item) => item.toLowerCase());
 
@@ -246,6 +250,7 @@ async function processIntent(
 
   try {
     const reviewedOutcome = await reviewIntent(provider, reviewInput, context);
+    reviewedOutcome.review.source = `external:${reviewConfig.provider ?? "model"}${reviewConfig.model ? `/${reviewConfig.model}` : ""}`;
     logger.review(reviewedOutcome.review);
 
     const reviewed = reviewedOutcome.intent;
@@ -426,60 +431,6 @@ function detectChange(newText: string): ChangeDecision {
   return { changedText: trimmed, ratio, reason: "changed" };
 }
 
-async function detectScreenpipeInterval(): Promise<number> {
-  try {
-    console.log("[detect] Analyzing Screenpipe OCR interval...");
-
-    const result = await pipe.queryScreenpipe({
-      contentType: "ocr",
-      limit: 100,
-      startTime: new Date(Date.now() - 300_000).toISOString(),
-      endTime: new Date().toISOString(),
-    });
-
-    if (!result?.data || result.data.length < 3) {
-      console.log("[detect] Not enough data, using default 30s interval");
-      return 30_000;
-    }
-
-    const timestamps: number[] = [];
-    for (const item of result.data) {
-      if (item.type === "OCR" && item.content.timestamp) {
-        timestamps.push(new Date(item.content.timestamp).getTime());
-      }
-    }
-
-    if (timestamps.length < 3) {
-      console.log("[detect] Not enough timestamps, using default 30s interval");
-      return 30_000;
-    }
-
-    timestamps.sort((a, b) => a - b);
-
-    const intervals: number[] = [];
-    for (let i = 1; i < timestamps.length; i++) {
-      const interval = timestamps[i] - timestamps[i - 1];
-      if (interval > 1000 && interval < 120_000) {
-        intervals.push(interval);
-      }
-    }
-
-    if (intervals.length === 0) {
-      console.log("[detect] No valid intervals, using default 30s");
-      return 30_000;
-    }
-
-    intervals.sort((a, b) => a - b);
-    const median = intervals[Math.floor(intervals.length / 2)];
-
-    console.log(`[detect] Screenpipe captures every ~${(median / 1000).toFixed(0)}s`);
-    return median;
-  } catch (error) {
-    console.error("[detect] Error detecting interval:", error);
-    return 30_000;
-  }
-}
-
 /**
  * Fetch OCR data, filter, and return texts+apps. Shared by polling loop and triggerOnce.
  */
@@ -491,11 +442,14 @@ type FetchAndFilterResult = {
   skippedWindow: number;
   skippedShort: number;
   skippedDedup: number;
+  skippedTime: number;
   chars: number;
 };
 
 async function fetchAndFilter(lookbackMs: number): Promise<FetchAndFilterResult> {
   const now = Date.now();
+  const startMs = now - lookbackMs;
+  const endMs = now;
   const startTime = new Date(now - lookbackMs).toISOString();
   const endTime = new Date(now).toISOString();
 
@@ -516,15 +470,26 @@ async function fetchAndFilter(lookbackMs: number): Promise<FetchAndFilterResult>
   const totalItems = result?.data?.length ?? 0;
 
   const candidates: { text: string; app: string }[] = [];
-  let skippedApp = 0, skippedWindow = 0, skippedShort = 0;
+  let skippedApp = 0, skippedWindow = 0, skippedShort = 0, skippedTime = 0;
 
   for (const item of result?.data ?? []) {
     if (item.type !== "OCR") continue;
     const text = item.content.text;
     const app = item.content.appName ?? "unknown";
     const windowName = item.content.windowName ?? "";
+    const rawTs = item.content.timestamp;
 
     if (!text) continue;
+    if (rawTs) {
+      const ts = new Date(rawTs).getTime();
+      if (
+        Number.isFinite(ts)
+        && (ts < startMs - TIMESTAMP_SKEW_TOLERANCE_MS || ts > endMs + TIMESTAMP_SKEW_TOLERANCE_MS)
+      ) {
+        skippedTime++;
+        continue;
+      }
+    }
 
     if (!isAppAllowed(app)) { skippedApp++; continue; }
     if (isWindowBlocked(windowName)) { skippedWindow++; continue; }
@@ -547,6 +512,7 @@ async function fetchAndFilter(lookbackMs: number): Promise<FetchAndFilterResult>
     skippedWindow,
     skippedShort,
     skippedDedup,
+    skippedTime,
     chars,
   };
 }
@@ -686,11 +652,10 @@ async function runPipeline() {
     return;
   }
 
-  const detectedInterval = await detectScreenpipeInterval();
-  POLL_INTERVAL_MS = detectedInterval + 5000;
-  LOOKBACK_MS = detectedInterval * 2;
-
-  console.log(`[pipeline] started — poll every ${POLL_INTERVAL_MS / 1000}s, lookback ${LOOKBACK_MS / 1000}s`);
+  console.log(
+    `[pipeline] started — poll every ${(POLL_INTERVAL_MS / 1000).toFixed(1)}s, lookback ${(LOOKBACK_MS / 1000).toFixed(1)}s`
+  );
+  console.log(`[pipeline] timestamp skew tolerance ${(TIMESTAMP_SKEW_TOLERANCE_MS / 1000).toFixed(1)}s`);
   console.log(`[pipeline] filter: ${allowedAppsLower.size} allowed apps, minText=${filterConfig.minTextLength}, blockedWindows=[${filterConfig.blockedWindows.join(", ")}]`);
 
   try {
@@ -717,6 +682,7 @@ async function runPipeline() {
           skippedWindow: data.skippedWindow,
           skippedShort: data.skippedShort,
           skippedDedup: data.skippedDedup,
+          skippedTime: data.skippedTime,
         });
 
         if (data.texts.length === 0) {
