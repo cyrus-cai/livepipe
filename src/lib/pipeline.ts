@@ -188,6 +188,7 @@ async function processIntent(
     errors: [],
   };
 
+  logger.info("③ DEDUP   正在进行");
   const actionableDedup = intent.actionable ? checkActionableDedup(intent) : null;
   const noteworthyDedup = intent.noteworthy ? checkNoteworthyDedup(intent) : null;
 
@@ -211,6 +212,7 @@ async function processIntent(
 
   const actionableCandidate = actionableDedup?.passed ?? false;
   const noteworthyCandidate = noteworthyDedup?.passed ?? false;
+  logger.info("③ DEDUP   已完成");
 
   if (!actionableCandidate && !noteworthyCandidate) {
     return;
@@ -220,6 +222,7 @@ async function processIntent(
     logger.reviewSkipped();
 
     if (actionableCandidate) {
+      logger.info("⑤ EXECUTE actionable 正在进行");
       const record = await recordAndNotify(intent);
       notifySummary.remindersSynced = record.remindersSynced;
       if (record.reminderError) {
@@ -227,14 +230,17 @@ async function processIntent(
       }
       const delivery = await sendNotification(intent);
       mergeNotifySummary(notifySummary, delivery);
+      logger.info("⑤ EXECUTE actionable 已完成");
     }
 
     if (noteworthyCandidate) {
+      logger.info("⑤ EXECUTE noteworthy 正在进行");
       const note = await recordNoteworthy(intent, sourceApp);
       notifySummary.notesSynced = note.notesSynced;
       if (note.notesError) {
         notifySummary.errors.push(`notes: ${note.notesError}`);
       }
+      logger.info("⑤ EXECUTE noteworthy 已完成");
     }
 
     logger.notify(notifySummary);
@@ -248,9 +254,11 @@ async function processIntent(
   };
 
   try {
+    logger.info("④ REVIEW  正在进行");
     const reviewedOutcome = await reviewIntent(provider, reviewInput, context);
     reviewedOutcome.review.source = `external:${reviewConfig.provider ?? "model"}${reviewConfig.model ? `/${reviewConfig.model}` : ""}`;
     logger.review(reviewedOutcome.review);
+    logger.info("④ REVIEW  已完成");
 
     const reviewed = reviewedOutcome.intent;
     if (!reviewed || (!reviewed.actionable && !reviewed.noteworthy)) {
@@ -258,6 +266,7 @@ async function processIntent(
     }
 
     if (reviewed.actionable) {
+      logger.info("⑤ EXECUTE actionable 正在进行");
       const record = await recordAndNotify(reviewed);
       notifySummary.remindersSynced = record.remindersSynced;
       if (record.reminderError) {
@@ -265,14 +274,17 @@ async function processIntent(
       }
       const delivery = await sendNotification(reviewed);
       mergeNotifySummary(notifySummary, delivery);
+      logger.info("⑤ EXECUTE actionable 已完成");
     }
 
     if (reviewed.noteworthy) {
+      logger.info("⑤ EXECUTE noteworthy 正在进行");
       const note = await recordNoteworthy(reviewed, sourceApp);
       notifySummary.notesSynced = note.notesSynced;
       if (note.notesError) {
         notifySummary.errors.push(`notes: ${note.notesError}`);
       }
+      logger.info("⑤ EXECUTE noteworthy 已完成");
     }
 
     logger.notify(notifySummary);
@@ -288,6 +300,7 @@ async function processIntent(
     logger.info("④ REVIEW  failOpen: pass-through");
 
     if (reviewInput.actionable) {
+      logger.info("⑤ EXECUTE actionable 正在进行");
       const record = await recordAndNotify(reviewInput);
       notifySummary.remindersSynced = record.remindersSynced;
       if (record.reminderError) {
@@ -295,14 +308,17 @@ async function processIntent(
       }
       const delivery = await sendNotification(reviewInput);
       mergeNotifySummary(notifySummary, delivery);
+      logger.info("⑤ EXECUTE actionable 已完成");
     }
 
     if (reviewInput.noteworthy) {
+      logger.info("⑤ EXECUTE noteworthy 正在进行");
       const note = await recordNoteworthy(reviewInput, sourceApp);
       notifySummary.notesSynced = note.notesSynced;
       if (note.notesError) {
         notifySummary.errors.push(`notes: ${note.notesError}`);
       }
+      logger.info("⑤ EXECUTE noteworthy 已完成");
     }
 
     logger.notify(notifySummary);
@@ -595,6 +611,7 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       endTime: Date.now(),
     };
 
+    logger.info("② INTENT  正在识别");
     const intent = await detectIntent(batch, { hotkeyTriggered: true });
 
     if (!intent) {
@@ -611,6 +628,7 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       dueTime: intent.due_time,
       latencyMs: intent.latencyMs,
     });
+    logger.info("② INTENT  已完成");
 
     if (intent.actionable || intent.noteworthy) {
       const reviewCtx: ReviewContext = {
@@ -714,6 +732,7 @@ async function runPipeline() {
           endTime: Date.now(),
         };
 
+        logger.info("② INTENT  正在识别");
         const intent = await detectIntent(batch);
 
         if (!intent) {
@@ -728,6 +747,7 @@ async function runPipeline() {
             dueTime: intent.due_time,
             latencyMs: intent.latencyMs,
           });
+          logger.info("② INTENT  已完成");
 
           if (intent.actionable || intent.noteworthy) {
             const reviewCtx: ReviewContext = {

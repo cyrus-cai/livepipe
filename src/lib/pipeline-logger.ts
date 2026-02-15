@@ -87,15 +87,37 @@ export class PipelineLogger {
   private lines: string[] = [];
   private startMs = Date.now();
   private flushed = false;
+  private headerPrinted = false;
 
   constructor(mode: "poll" | "hotkey", seq: number) {
     this.mode = mode;
     this.seq = seq;
   }
 
+  private getLabel(): string {
+    return this.mode === "poll" ? `POLL #${this.seq}` : `HOTKEY #${this.seq}`;
+  }
+
+  private getHeaderLine(): string {
+    const label = this.getLabel();
+    return `╭─ ${label} ${"─".repeat(Math.max(0, 50 - label.length))}`;
+  }
+
+  private printHeaderIfNeeded(): void {
+    if (this.headerPrinted) return;
+    console.log(this.getHeaderLine());
+    this.headerPrinted = true;
+  }
+
+  private pushLine(line: string): void {
+    this.lines.push(line);
+    this.printHeaderIfNeeded();
+    console.log(line);
+  }
+
   /** Record a "no data / skip" result and flush immediately */
   skip(reason: string): void {
-    const label = this.mode === "poll" ? `POLL #${this.seq}` : `HOTKEY #${this.seq}`;
+    const label = this.getLabel();
     console.log(`${DIM}╭─ ${label} ──── ${reason} ───╯${RESET}`);
     this.flushed = true;
   }
@@ -109,45 +131,45 @@ export class PipelineLogger {
     if (r.skippedDedup > 0) filters.push(`dup:−${r.skippedDedup}`);
     if ((r.skippedTime ?? 0) > 0) filters.push(`time:−${r.skippedTime}`);
     const filterStr = filters.length > 0 ? ` (${filters.join(" ")})` : "";
-    this.lines.push(
+    this.pushLine(
       `│ ① FETCH   ${r.totalItems} items → ${r.keptItems} kept [${r.apps.join(", ")}] ${r.chars} chars${filterStr}`
     );
   }
 
   /** ② Change detection — screen didn't change enough */
   noChange(ratio: number): void {
-    this.lines.push(`│ ② CHANGE  ${(ratio * 100).toFixed(0)}% < threshold — skipped`);
+    this.pushLine(`│ ② CHANGE  ${(ratio * 100).toFixed(0)}% < threshold — skipped`);
   }
 
   /** ② Intent detection */
   intent(r: IntentInfo): void {
     const flags = [`actionable=${r.actionable}`, `noteworthy=${r.noteworthy}`];
     if (r.urgent) flags.push("urgent");
-    this.lines.push(`│ ② INTENT  ${flags.join(" ")} (${r.latencyMs}ms)`);
+    this.pushLine(`│ ② INTENT  ${flags.join(" ")} (${r.latencyMs}ms)`);
     if (r.content) {
-      this.lines.push(`│            "${r.content}"`);
+      this.pushLine(`│            "${r.content}"`);
     }
     if (r.dueTime) {
-      this.lines.push(`│            due=${r.dueTime}`);
+      this.pushLine(`│            due=${r.dueTime}`);
     }
   }
 
   /** Intent returned nothing useful */
   intentSkip(reason: string): void {
-    this.lines.push(`│ ② INTENT  ${DIM}${reason}${RESET}`);
+    this.pushLine(`│ ② INTENT  ${DIM}${reason}${RESET}`);
   }
 
   /** ③ Dedup check */
   dedup(r: DedupResult): void {
     if (r.passed) {
-      this.lines.push(
+      this.pushLine(
         `│ ③ DEDUP   ${GREEN}✓ passed${RESET} (${r.cacheSize ?? "?"} entries, threshold=${((r.threshold ?? 0) * 100).toFixed(0)}%)`
       );
     } else {
       const simStr = r.similarity != null
         ? `${(r.similarity * 100).toFixed(0)}% match`
         : r.reason || "duplicate";
-      this.lines.push(
+      this.pushLine(
         `│ ③ DEDUP   ${RED}✗ duplicate${RESET} (${simStr}) — skipped`
       );
     }
@@ -158,12 +180,12 @@ export class PipelineLogger {
     const sourceTag = r.source ? `[${r.source}] ` : "";
     for (const s of r.stages) {
       const icon = s.stage === 1 ? `${CYAN}stage1${RESET}` : `${CYAN}stage2${RESET}`;
-      this.lines.push(`│ ④ REVIEW  ${sourceTag}${icon}: ${s.outcome} (${s.latencyMs}ms)`);
+      this.pushLine(`│ ④ REVIEW  ${sourceTag}${icon}: ${s.outcome} (${s.latencyMs}ms)`);
     }
     if (r.rejected) {
-      this.lines.push(`│ ④ REVIEW  ${RED}✗ rejected${RESET}`);
+      this.pushLine(`│ ④ REVIEW  ${RED}✗ rejected${RESET}`);
     } else if (r.finalContent) {
-      this.lines.push(
+      this.pushLine(
         `│            → "${r.finalContent}"${r.finalDueTime ? ` due=${r.finalDueTime}` : ""}`
       );
     }
@@ -171,7 +193,7 @@ export class PipelineLogger {
 
   /** Review skipped (not enabled) */
   reviewSkipped(): void {
-    this.lines.push(`│ ④ REVIEW  ${DIM}(disabled)${RESET}`);
+    this.pushLine(`│ ④ REVIEW  ${DIM}(disabled)${RESET}`);
   }
 
   /** ⑤ Notification */
@@ -179,25 +201,25 @@ export class PipelineLogger {
     const parts: string[] = [];
     if (r.desktop) parts.push("desktop");
     if (r.webhooks.length) parts.push(r.webhooks.join("+"));
-    this.lines.push(
+    this.pushLine(
       parts.length > 0
         ? `│ ⑤ NOTIFY  ${GREEN}✓${RESET} ${parts.join(" + ")}`
         : `│ ⑤ NOTIFY  ${DIM}(no external notification)${RESET}`
     );
     if (r.remindersSynced) {
-      this.lines.push(`│           ${GREEN}✓${RESET} reminders synced`);
+      this.pushLine(`│           ${GREEN}✓${RESET} reminders synced`);
     }
     if (r.notesSynced) {
-      this.lines.push(`│           ${GREEN}✓${RESET} notes synced`);
+      this.pushLine(`│           ${GREEN}✓${RESET} notes synced`);
     }
     for (const err of r.errors) {
-      this.lines.push(`│           ${RED}✗${RESET} ${err}`);
+      this.pushLine(`│           ${RED}✗${RESET} ${err}`);
     }
   }
 
   /** Add an arbitrary info line */
   info(text: string): void {
-    this.lines.push(`│ ${text}`);
+    this.pushLine(`│ ${text}`);
   }
 
   /** Flush all collected lines as a formatted block */
@@ -206,14 +228,9 @@ export class PipelineLogger {
     this.flushed = true;
 
     const elapsed = ((Date.now() - this.startMs) / 1000).toFixed(1);
-    const label = this.mode === "poll" ? `POLL #${this.seq}` : `HOTKEY #${this.seq}`;
-    const headerLine = `╭─ ${label} ${"─".repeat(Math.max(0, 50 - label.length))}`;
     const footerLine = `╰${"─".repeat(30)} ${elapsed}s total`;
 
-    console.log(headerLine);
-    for (const line of this.lines) {
-      console.log(line);
-    }
+    this.printHeaderIfNeeded();
     console.log(footerLine);
   }
 }
