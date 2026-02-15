@@ -1,6 +1,7 @@
 import type { LlmProvider, ChatMessage, ChatOptions } from "../llm-provider";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const MAX_RETRIES = 2;
 
 interface GeminiConfig {
   apiKey: string;
@@ -35,6 +36,7 @@ export function createGeminiProvider(config: GeminiConfig): LlmProvider {
         generationConfig: {
           temperature: options?.temperature ?? 0.2,
           maxOutputTokens: options?.maxTokens ?? 500,
+          responseMimeType: "application/json",
         },
       };
 
@@ -44,30 +46,64 @@ export function createGeminiProvider(config: GeminiConfig): LlmProvider {
         };
       }
 
-      const t0 = Date.now();
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        const t0 = Date.now();
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
 
-      const latency = Date.now() - t0;
+        const latency = Date.now() - t0;
 
-      if (!res.ok) {
-        if (res.status === 429) {
-          throw new Error(`Gemini API rate limited (${latency}ms) — retry later`);
-        } else if (res.status === 401 || res.status === 403) {
-          throw new Error(`Gemini API auth failed (${res.status}) — check API key`);
-        } else {
-          throw new Error(`Gemini API error ${res.status} (${latency}ms)`);
+        if (!res.ok) {
+          if (res.status === 429) {
+            throw new Error(`Gemini API rate limited (${latency}ms) — retry later`);
+          } else if (res.status === 401 || res.status === 403) {
+            throw new Error(`Gemini API auth failed (${res.status}) — check API key`);
+          } else {
+            throw new Error(`Gemini API error ${res.status} (${latency}ms)`);
+          }
         }
+
+        const data = await res.json();
+        const candidate = data.candidates?.[0];
+        const finishReason = candidate?.finishReason;
+        const parts = candidate?.content?.parts;
+        const text = Array.isArray(parts)
+          ? parts
+            .map((part: { text?: string }) => (typeof part?.text === "string" ? part.text : ""))
+            .join("")
+          : "";
+
+        // Check if response is valid JSON when we requested JSON mode
+        const isValidJson = (() => {
+          try {
+            const match = text.match(/\{[\s\S]*\}/);
+            if (!match) return false;
+            JSON.parse(match[0]);
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+
+        if (finishReason && finishReason !== "STOP") {
+          console.log(`[gemini] response (${latency}ms, ${text.length} chars) finishReason=${finishReason}`);
+        } else {
+          console.log(`[gemini] response (${latency}ms, ${text.length} chars)`);
+        }
+
+        if (!isValidJson && attempt < MAX_RETRIES) {
+          console.log(`[gemini] invalid JSON on attempt ${attempt + 1}, retrying... raw: "${text.substring(0, 80)}"`);
+          continue;
+        }
+
+        return text;
       }
 
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-      console.log(`[gemini] response (${latency}ms, ${text.length} chars)`);
-      return text;
+      // Should not reach here, but just in case
+      return "";
     },
   };
 }

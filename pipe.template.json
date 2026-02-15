@@ -70,5 +70,14 @@
   "reminders": {
     "enabled": false,
     "list": "LivePipe"
+  },
+  "notes": {
+    "enabled": false,
+    "folder": "LivePipe"
+  },
+  "dedup": {
+    "actionableThreshold": 0.6,
+    "noteworthyThreshold": 0.8,
+    "lookbackDays": 7
   }
 }

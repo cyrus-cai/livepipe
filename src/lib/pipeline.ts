@@ -1,6 +1,16 @@
 import { pipe } from "@screenpipe/js";
 import { detectIntent } from "@/lib/intent-detector";
-import { shouldNotify, shouldProcess, recordAndNotify, loadTasksFromFile, loadRawFromFile } from "@/lib/deduplication";
+import {
+  shouldNotify,
+  shouldProcessActionable,
+  shouldProcessNoteworthy,
+  shouldSyncNoteworthy,
+  recordAndNotify,
+  recordNoteworthy,
+  loadTasksFromFile,
+  loadRawFromFile,
+  loadMemoRawFromFile,
+} from "@/lib/deduplication";
 import { sendNotification } from "@/lib/notifier";
 import { reviewIntent, type ReviewContext } from "@/lib/review";
 import { createGeminiProvider } from "@/lib/providers/gemini";
@@ -131,51 +141,82 @@ function getReviewProvider(): LlmProvider | null {
 }
 
 /**
- * Process an actionable intent through the review pipeline.
- * When review is enabled: shouldProcess (dedup) → Gemini review → recordAndNotify → notify
- * When review is disabled: shouldNotify (dedup + record) → notify
+ * Process intent through dual-path pipeline.
+ * actionable=true: dedup → review(optional) → reminders+notify
+ * noteworthy=true: dedup → review(optional) → apple notes
  */
 async function processIntent(intent: IntentResult, context?: ReviewContext): Promise<void> {
-  if (!intent.actionable) {
-    console.log("[poll] not actionable");
+  if (!intent.actionable && !intent.noteworthy) {
+    console.log("[poll] neither actionable nor noteworthy");
     return;
   }
 
+  const sourceApp = context?.sourceApp || "unknown";
   const provider = getReviewProvider();
 
   if (!provider) {
-    // Review not enabled — use legacy path (dedup + record combined)
-    if (shouldNotify(intent)) {
-      console.log(`[poll] ACTIONABLE: type=${intent.type}, content="${intent.content}", due=${intent.due_time}`);
-      await sendNotification(intent);
-    } else {
-      console.log("[poll] duplicate, skipped");
+    // Review not enabled — direct dedup + output
+    if (intent.actionable) {
+      if (shouldNotify(intent)) {
+        console.log(`[poll] ACTIONABLE: urgent=${intent.urgent}, content="${intent.content}", due=${intent.due_time}`);
+        await sendNotification(intent);
+      } else {
+        console.log("[poll] actionable duplicate, skipped");
+      }
+    }
+
+    if (intent.noteworthy) {
+      if (shouldSyncNoteworthy(intent, sourceApp)) {
+        console.log(`[poll] NOTEWORTHY: content="${intent.content}"`);
+      } else {
+        console.log("[poll] noteworthy duplicate, skipped");
+      }
     }
     return;
   }
 
-  // Review enabled — two-layer flow
-  if (!shouldProcess(intent)) {
-    console.log("[poll] duplicate (raw), skipped review");
+  // Review enabled — dedup each path independently before review
+  const actionableCandidate = intent.actionable ? shouldProcessActionable(intent) : false;
+  const noteworthyCandidate = intent.noteworthy ? shouldProcessNoteworthy(intent) : false;
+
+  if (!actionableCandidate && !noteworthyCandidate) {
+    console.log("[poll] duplicate on both paths, skipped review");
     return;
   }
 
+  const reviewInput: IntentResult = {
+    ...intent,
+    actionable: actionableCandidate,
+    noteworthy: noteworthyCandidate,
+  };
+
   try {
-    const reviewed = await reviewIntent(provider, intent, context);
-    if (!reviewed || !reviewed.actionable) {
+    const reviewed = await reviewIntent(provider, reviewInput, context);
+    if (!reviewed || (!reviewed.actionable && !reviewed.noteworthy)) {
       console.log("[poll] review rejected");
       return;
     }
 
-    recordAndNotify(reviewed);
-    console.log(`[poll] REVIEWED & ACTIONABLE: type=${reviewed.type}, content="${reviewed.content}", due=${reviewed.due_time}`);
-    await sendNotification(reviewed);
+    if (reviewed.actionable) {
+      recordAndNotify(reviewed);
+      console.log(`[poll] REVIEWED & ACTIONABLE: urgent=${reviewed.urgent}, content="${reviewed.content}", due=${reviewed.due_time}`);
+      await sendNotification(reviewed);
+    }
+    if (reviewed.noteworthy) {
+      recordNoteworthy(reviewed, sourceApp);
+      console.log(`[poll] REVIEWED & NOTEWORTHY: content="${reviewed.content}"`);
+    }
   } catch (err) {
     console.error("[poll] review error:", err);
     if (reviewConfig.failOpen) {
       console.log("[poll] failOpen: passing through without review");
-      recordAndNotify(intent);
-      await sendNotification(intent);
+      if (reviewInput.actionable) {
+        recordAndNotify(reviewInput);
+        await sendNotification(reviewInput);
+      }
+      if (reviewInput.noteworthy) {
+        recordNoteworthy(reviewInput, sourceApp);
+      }
     }
   }
 }
@@ -461,7 +502,7 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       return { triggered: true };
     }
 
-    if (intent.actionable) {
+    if (intent.actionable || intent.noteworthy) {
       const reviewCtx: ReviewContext = {
         sourceApp: [...apps].join(", "),
         trigger: "hotkey",
@@ -470,7 +511,7 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       };
       await processIntent(intent, reviewCtx);
     } else {
-      console.log("[trigger] not actionable");
+      console.log("[trigger] neither actionable nor noteworthy");
     }
 
     return { triggered: true, intent };
@@ -547,7 +588,7 @@ async function runPipeline() {
 
         if (!intent) {
           console.log("[poll] intent detection returned null");
-        } else if (intent.actionable) {
+        } else if (intent.actionable || intent.noteworthy) {
           const reviewCtx: ReviewContext = {
             sourceApp: [...data.apps].join(", "),
             trigger: "poll",
@@ -556,7 +597,7 @@ async function runPipeline() {
           };
           await processIntent(intent, reviewCtx);
         } else {
-          console.log("[poll] not actionable");
+          console.log("[poll] neither actionable nor noteworthy");
         }
       } catch (error) {
         console.error("[poll] error:", error);
@@ -578,6 +619,7 @@ export function startPipeline() {
   setupConfigWatcher();
   console.log("[auto-start] Starting pipeline...");
   loadRawFromFile();
+  loadMemoRawFromFile();
   loadTasksFromFile();
   logEffectiveConfig();
   if (reviewConfig.enabled && reviewConfig.apiKey) {

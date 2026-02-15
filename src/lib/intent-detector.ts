@@ -2,78 +2,78 @@ import type { IntentResult } from "./schemas";
 import type { Batch } from "./batch-aggregator";
 import { DEFAULT_OLLAMA_MODEL, OLLAMA_CHAT_URL } from "./constants";
 
-const SYSTEM_PROMPT = `You are a strict task detector for OCR screen text. Decide whether there is a REAL user-actionable item. Do NOT rewrite, translate, or summarize.
+const SYSTEM_PROMPT = `You are an intent detector for OCR screen text. Decide independently whether content is actionable and/or noteworthy. Do NOT rewrite, translate, or summarize.
 
 Your decisions:
-1. "actionable": true only for real tasks/reminders/meetings/deadlines.
-2. "type": reminder/todo/meeting/deadline/note
-3. "content": extract the ORIGINAL task phrase only (keep original language).
-4. "due_time": parse time to ISO when possible.
+1. "actionable": true only if user should take action (task, reminder, meeting, deadline, reply).
+2. "noteworthy": true only if content is worth recording even without action (decision, valuable fact, reference context).
+3. "content": extract original relevant phrase only (keep original language).
+4. "due_time": parse time to ISO only when actionable time exists.
+5. "urgent": true when wording implies high urgency/deadline pressure.
 
-Hard non-task rules (higher priority):
-- Quoted/translation/example context is NOT a task: "这句...怎么翻", "people say", tutorials, principles, tips.
-- Article/newsletter/poll/ad/CTA/UI text is NOT a task UNLESS there is a separate explicit assigned action sentence.
-- App chrome/buttons/options are NOT tasks: "Remind me later", "Enable | Not now", "Vote now", "Add to cart".
-- Code/log/terminal/system prompts are NOT tasks, including code comments/diffs such as "// reminder: retry on 429", "const ...", "Files changed".
-- Explicit no-action statements are NOT tasks: "不用回了", "no action needed", "no follow-up required".
-- "canceled" + "no follow-up required" means NOT actionable.
-- Past/completed-only items are NOT tasks: "Yesterday ... (Completed)".
+Hard reject rules:
+- UI labels/buttons/menus are NOT actionable and NOT noteworthy.
+- Ads/promo/newsletter CTA/polls are NOT actionable and NOT noteworthy.
+- Code/log/terminal/system text is NOT actionable and NOT noteworthy.
+- Quoted examples/tutorial principles/translations are NOT actionable and usually NOT noteworthy.
+- Explicit no-action statements are NOT actionable.
 
-Task rules (apply only if non-task rules above do not match):
-- Direct request assigned to user with concrete action object is actionable:
-  "please update vendor bank info...", "could you follow up with Legal...", "don't forget to call the landlord at 8pm".
-- Personal commitments are actionable: "我需要...", "记得...", "别忘了...", "need to...".
-- Meetings/deadlines with a real future schedule are actionable.
-- If cancellation + new time both appear, use the NEW schedule as actionable.
-- In mixed text (noise + one task sentence), actionable=true and extract only that task sentence.
-- Explicit directive sentences win over nearby promo noise:
-  "记得今晚9点前把报销单提交到OA", "plz 记得 Tue 4pm 跟供应商确认交期", "Please update the vendor bank info before payment run".
+Actionable rules:
+- Direct requests or commitments with clear action target are actionable.
+- Meetings/deadlines with future schedule are actionable.
+- If cancellation + new time both appear, use the new schedule.
+- In mixed text, extract only the real actionable sentence.
 
-Tie-break:
-- If uncertain, choose actionable=false.
-- Do NOT convert generic advice into a task unless it is clearly assigned.
+Noteworthy rules:
+- Should be true for decisions, useful facts, reference links/info worth reviewing later.
+- Should be false for noise, generic slogans, UI text, ads, random fragments, code.
+- Can be true together with actionable.
+
+Urgent rules:
+- true when there is explicit urgency/deadline pressure: "ASAP", "立即", "马上", "今天下班前", "before 5pm", "紧急".
+- false otherwise.
 
 CRITICAL rules for "content":
 - Extract original wording only; no translation.
-- Keep only task phrase; remove unrelated noise.
+- Keep only relevant actionable/noteworthy phrase.
 - Maximum 200 characters.
 
 CRITICAL rules for "due_time":
 - ISO 8601 format: "YYYY-MM-DDTHH:mm"
-- Current date/time will be provided. due_time must be AFTER current time.
-- Convert relative expressions. If resolved time is in the past, push to next day.
-- If no time mentioned, set null.
+- due_time must be AFTER current time.
+- Convert relative expressions. If resolved time is in the past, push to next valid occurrence.
+- If no actionable time is mentioned, set null.
 
 Respond ONLY with JSON:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
+{"actionable": bool, "noteworthy": bool, "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null", "urgent": bool}`;
 
-const HOTKEY_SYSTEM_PROMPT = `You are a screen text filter. The user explicitly pressed a hotkey to capture this — they WANT you to find actionable content. Be MORE lenient. Do NOT rewrite, translate, or summarize — just extract the relevant original text.
+const HOTKEY_SYSTEM_PROMPT = `You are a screen text intent detector. User pressed a hotkey, so be more lenient in capturing useful content. Do NOT rewrite, translate, or summarize.
 
-Mark as actionable (true) if there is ANY hint of:
-- Tasks, todos, reminders, appointments, deadlines
-- Messages that might need a reply
-- Content the user might want to remember or act on
-- Shopping lists, notes, calendar items
-- Any text that describes something to DO, BUY, SEND, READ, CHECK, or ATTEND
+Output fields:
+- actionable: true if user might need to act.
+- noteworthy: true if content is worth saving for later reference.
+- content: original useful phrase only.
+- due_time: ISO if actionable time exists, else null.
+- urgent: true if urgency signals exist.
 
-Only mark as NOT actionable if the screen contains absolutely nothing useful.
+Hotkey behavior:
+- Prefer capturing potentially useful intent instead of dropping.
+- Still reject obvious junk: pure UI labels, ads, random OCR gibberish, code logs.
+- actionable and noteworthy can both be true.
 
 CRITICAL rules for "content":
-- EXTRACT the original task text from the screen, do NOT rewrite or translate it
-- Remove noise (UI elements, code, unrelated text) but keep the task phrase intact
-- If the original is English, keep English. If Chinese, keep Chinese. Do NOT translate.
-- You may lightly trim or combine fragments, but preserve original wording
-- Maximum 200 characters
+- Keep original wording and language.
+- Remove surrounding noise.
+- Maximum 200 characters.
 
 CRITICAL rules for "due_time":
 - ISO 8601 format: "YYYY-MM-DDTHH:mm"
-- Current date/time will be provided. All due_time must be AFTER current time.
-- Convert relative expressions: "明天下午3点" → next day 15:00, "at 11AM" → today 11:00
-- If resolved time is in the past, push to next day
-- If no time mentioned, set to null
+- due_time must be AFTER current time.
+- Convert relative expressions to absolute time.
+- If no actionable time, set null.
 
 Respond ONLY with JSON:
-{"actionable": bool, "type": "reminder"|"todo"|"meeting"|"deadline"|"note", "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null"}`;
+{"actionable": bool, "noteworthy": bool, "content": "extracted original text", "due_time": "YYYY-MM-DDTHH:mm or null", "urgent": bool}`;
 
 export interface DetectOptions {
   hotkeyTriggered?: boolean;
@@ -92,6 +92,89 @@ export function isCodeLine(line: string): boolean {
   const codePatterns = /^(import |export |const |let |var |function |class |if\s*\(|for\s*\(|return |await |async |\{|\}|\/\/|<\/|=>|\.then|\.catch|console\.|npm |bun |curl )/;
   const symbolRatio = (line.match(/[{}();=<>|&]/g) || []).length / Math.max(line.length, 1);
   return codePatterns.test(line.trim()) || symbolRatio > 0.15;
+}
+
+const NO_ACTION_PATTERNS = [
+  /no action needed/i,
+  /no follow-?up required/i,
+  /不用回了/,
+  /无需跟进/,
+  /\(completed\)/i,
+  /已完成/,
+];
+
+const NOISE_PATTERNS = [
+  /\b(add to cart|buy now|vote now|click to read more|unsubscribe)\b/i,
+  /\b(weekend sale|flash sale|super deal|promo)\b/i,
+  /\b(remind me later|snooze|dismiss|enable \| not now)\b/i,
+  /\bselect\s+\*[\s\S]*\bfrom\b/i,
+  /\berror[\s\S]*deadline exceeded\b/i,
+  /\bretry on \d{3}\b/i,
+  /\bdependabot alert resolved\b/i,
+];
+
+const TASK_SIGNAL_PATTERNS = [
+  /\b(don't forget to|remember to|please|could you|need to|follow up|update|submit|call|review|pay|send)\b/i,
+  /记得|别忘了|请|提交|确认|发我|联系|跟进/,
+];
+
+const NOTEWORTHY_SIGNAL_PATTERNS = [
+  /结论|决策|要点|纪要|复盘|根因|takeaway|decision|summary|root cause|postmortem/i,
+  /参考|runbook|endpoint|wiki|文档|context|背景|链接|reference/i,
+];
+
+const URGENT_PATTERNS = [
+  /\b(asap|urgent|immediately|right now)\b/i,
+  /紧急|立刻|马上|尽快|立即|今晚|今天下班前|截止|最迟/,
+  /\b(priority:\s*high|by\s+\w+\s+\d{1,2}:\d{2}|before\s+\d{1,2}(:\d{2})?)\b/i,
+];
+
+function hasAnyPattern(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function hasStandaloneCancellation(text: string): boolean {
+  const canceled = /(canceled|cancelled|取消|已取消)/i.test(text);
+  const rescheduled = /(改到|改期|moved to|reschedul)/i.test(text);
+  return canceled && !rescheduled;
+}
+
+function normalizeIntentResult(result: IntentResult): IntentResult {
+  const normalizedContent = result.content.trim();
+  if (!normalizedContent) {
+    return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
+  }
+
+  const normalized: IntentResult = {
+    ...result,
+    content: normalizedContent,
+  };
+
+  const hasTaskSignal = hasAnyPattern(normalizedContent, TASK_SIGNAL_PATTERNS);
+  if (hasAnyPattern(normalizedContent, NOISE_PATTERNS) && !hasTaskSignal) {
+    return { actionable: false, noteworthy: false, content: normalizedContent, due_time: null, urgent: false };
+  }
+
+  if (hasAnyPattern(normalizedContent, NO_ACTION_PATTERNS) || hasStandaloneCancellation(normalizedContent)) {
+    normalized.actionable = false;
+  }
+
+  const hasNoteworthySignal = hasAnyPattern(normalizedContent, NOTEWORTHY_SIGNAL_PATTERNS);
+  if (normalized.noteworthy && !hasNoteworthySignal) {
+    normalized.noteworthy = false;
+  }
+
+  if (!normalized.actionable) {
+    normalized.due_time = null;
+  }
+
+  normalized.urgent = hasAnyPattern(normalizedContent, URGENT_PATTERNS);
+
+  if (!normalized.actionable && !normalized.noteworthy) {
+    normalized.urgent = false;
+  }
+
+  return normalized;
 }
 
 export function cleanOcrText(texts: string[]): string {
@@ -127,32 +210,31 @@ export function extractJson(text: string): IntentResult | null {
   // Fix unquoted values
   jsonStr = jsonStr.replace(/:\s*null\b/g, ': null');
 
-  const validTypes = ["reminder", "todo", "meeting", "deadline", "note"];
-
   try {
     const parsed = JSON.parse(jsonStr);
-    const type = validTypes.includes(parsed.type) ? parsed.type : "note";
     return {
       actionable: Boolean(parsed.actionable),
-      type,
+      noteworthy: Boolean(parsed.noteworthy),
       content: String(parsed.content || "").substring(0, 200),
       due_time: parsed.due_time && String(parsed.due_time) !== "null" ? String(parsed.due_time) : null,
+      urgent: Boolean(parsed.urgent),
     };
   } catch {
     // Last resort: regex extract fields
     try {
       const actionable = /"actionable"\s*:\s*(true|false)/.exec(jsonStr);
+      const noteworthy = /"noteworthy"\s*:\s*(true|false)/.exec(jsonStr);
       const contentMatch = /"content"\s*:\s*"([^"]*)"/.exec(jsonStr);
-      const typeMatch = /"type"\s*:\s*"([^"]*)"/.exec(jsonStr);
       const dueMatch = /"due_time"\s*:\s*"([^"]*)"/.exec(jsonStr);
+      const urgent = /"urgent"\s*:\s*(true|false)/.exec(jsonStr);
 
       if (actionable) {
-        const validType = validTypes.includes(typeMatch?.[1] || "") ? typeMatch![1] : "note";
         return {
           actionable: actionable[1] === "true",
-          type: validType as IntentResult["type"],
+          noteworthy: noteworthy ? noteworthy[1] === "true" : false,
           content: contentMatch?.[1] || "",
           due_time: dueMatch?.[1] || null,
+          urgent: urgent ? urgent[1] === "true" : false,
         };
       }
     } catch {}
@@ -222,7 +304,7 @@ JSON:`;
     const trimmed = content.replace(/```json?/g, "").replace(/```/g, "").trim();
     if (!trimmed) {
       console.log(`[intent] empty response (${latency}ms)`);
-      return { actionable: false, type: "note", content: "", due_time: null };
+      return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
     }
 
     console.log(`[intent] LLM response (${latency}ms): ${trimmed.substring(0, 300)}`);
@@ -233,17 +315,19 @@ JSON:`;
       return null;
     }
 
+    const normalizedResult = normalizeIntentResult(result);
+
     // Filter out garbage/garbled content from bad OCR
-    if (result.actionable && isGarbled(result.content)) {
-      console.log(`[intent] content looks garbled, ignoring: "${result.content}"`);
-      return { actionable: false, type: "note", content: "", due_time: null };
+    if ((normalizedResult.actionable || normalizedResult.noteworthy) && isGarbled(normalizedResult.content)) {
+      console.log(`[intent] content looks garbled, ignoring: "${normalizedResult.content}"`);
+      return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
     }
 
     console.log(
-      `[intent] => actionable=${result.actionable}, type=${result.type}, content="${result.content}", due="${result.due_time}"`
+      `[intent] => actionable=${normalizedResult.actionable}, noteworthy=${normalizedResult.noteworthy}, urgent=${normalizedResult.urgent}, content="${normalizedResult.content}", due="${normalizedResult.due_time}"`
     );
 
-    return result;
+    return normalizedResult;
   } catch (error) {
     console.error("[intent] error:", error);
     return null;

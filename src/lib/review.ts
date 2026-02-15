@@ -25,84 +25,79 @@ const MAGENTA = "\x1b[35m";
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 
+function summarizeRawResponse(text: string, limit = 500): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return "(empty)";
+  return flat.length > limit ? `${flat.slice(0, limit)}...` : flat;
+}
+
 /**
- * Prompt 1: Actionability validation
- * Verify whether the small model's output is truly a human-actionable task.
+ * Prompt 1: Dimension validation
+ * Validate actionable/noteworthy independently.
  */
-const ACTIONABILITY_PROMPT = `You are a task review expert. Your job is to verify whether a "to-do item" extracted by a small AI model from screen OCR text is truly a task that requires human action.
+const INTENT_VALIDATION_PROMPT = `You are an OCR intent review expert.
+Validate two independent dimensions for extracted content:
+- actionable: user should take action
+- noteworthy: worth recording even without action
 
 You will receive:
-- The extracted task (type, content, due_time)
-- Source app: which application the screen text came from
-- Trigger: "poll" (automatic background capture) or "hotkey" (user explicitly requested capture — be more lenient)
-- OCR snippet: a short excerpt of original screen text for context
+- extracted content + due_time + urgent + current actionable/noteworthy flags
+- source app
+- trigger mode: poll/hotkey
+- OCR snippet
 
-Use the source app and OCR snippet to judge whether this is a real task:
-- Browser ads/buttons ("Buy Now", "Subscribe") from chrome are usually NOT real tasks
-- Messages from chat apps (slack, wechat, telegram) that say "remember to..." ARE likely real
-- Calendar/email apps have high trust for meetings and deadlines
-- If trigger is "hotkey", the user actively wanted this captured — lower your rejection threshold
+Validation rules:
+- actionable=false for UI labels/buttons/ads/code/logs/tutorial examples/no-action notices
+- actionable=true for concrete user requests/commitments/meetings/deadlines/reply-required messages
+- noteworthy=false for noise, random fragments, pure UI text, ads, code, logs
+- noteworthy=true for decisions, valuable references, meaningful context worth revisiting
+- hotkey mode can be slightly more lenient, but still reject obvious junk
 
-Common false positives from the small model:
-- UI labels, button text, or menu items misidentified as tasks
-- News headlines or article content misidentified as to-do items
-- Code comments or TODO markers misidentified as user tasks
-- Ads or recommended content misidentified as reminders
-- Hallucinated tasks that don't match the OCR snippet at all
-- Incomplete/truncated fragments: an action verb followed by gibberish, random characters, or meaningless fragments (e.g. "Investigate Oj&", "Check xK#2", "Review @@") — these are OCR artifacts, NOT real tasks
-- Content where the object of the action is unintelligible or missing — a real task must have a clear, understandable target (e.g. "Investigate the bug" is valid, "Investigate Oj&" is NOT)
+Respond in JSON:
+{"actionable": true/false, "noteworthy": true/false, "reason": "brief explanation"}
 
-Respond in JSON format:
-{"approved": true/false, "reason": "brief explanation"}
-
-Respond ONLY with JSON, no other text.`;
+Respond ONLY with JSON.`;
 
 /**
  * Prompt 2: Content refinement
- * Take the raw extracted text and produce a clean, natural to-do sentence in the target language.
+ * Refine content with strategy split for task vs memo.
  */
 function buildQualityPrompt(language: string): string {
-  return `You are a to-do quality reviewer. You receive a task extracted by a small model from screen OCR, along with context. Your job is to produce the final, polished output in ${language}.
+  return `You are an intent quality reviewer. Refine extracted OCR intent into final output in ${language}.
 
-You will receive:
-- Content: the raw extracted task text
-- Extracted type: the small model's classification (reminder/todo/meeting/deadline/note)
-- Extracted due_time: the small model's parsed time (ISO 8601 or null)
-- Current time: for resolving relative time references
-- OCR snippet: original screen text for verification
+Input fields:
+- content
+- actionable
+- noteworthy
+- urgent
+- due_time
+- current time
+- OCR snippet
 
-LANGUAGE HARD CONSTRAINT (highest priority):
-- The field "refined_content" MUST be in ${language}. This is mandatory.
-- Apply this rule equally for any target language value.
-- Translate all translatable action words and task descriptions into ${language}.
-- Do not mix languages unless strictly necessary for non-translatable tokens.
-- Keep out-of-language tokens ONLY when they are irreplaceable proper nouns, URLs, email addresses, code identifiers, PR/issue IDs, or official product names.
-- Do not keep full clauses/sentences in other languages when they are translatable.
-- If you cannot fully satisfy the language constraint, set "approved" to false and explain briefly in "reason".
+Goals:
+1. Verify content matches OCR snippet (reject hallucinations).
+2. Keep strict output language: ${language}.
+3. Refine expression by intent type:
+   - actionable=true: use imperative/action-oriented sentence.
+   - actionable=false and noteworthy=true: use declarative memo/information sentence.
+   - actionable=true and noteworthy=true: keep action clear and include key memo context briefly.
+4. Correct due_time:
+   - Extract missing time from OCR if present.
+   - Fix wrong time, normalize to ISO "YYYY-MM-DDTHH:mm".
+   - due_time must be after current time; if past, move to next valid occurrence.
+   - If no actionable time exists, set null.
+5. Correct urgent:
+   - true only when explicit urgency/deadline pressure exists.
 
-Your tasks:
-1. Verify the content matches the OCR snippet (reject hallucinations)
-2. Convert content into compliant ${language} output under the language hard constraint above
-3. Fix grammar issues, remove redundancy, write a clean self-explanatory sentence
-4. Verify and correct the type classification if wrong (e.g. a meeting classified as "todo")
-5. Verify and correct due_time:
-   - If the small model missed a time that exists in the OCR, extract it
-   - If the small model got the time wrong, fix it
-   - Convert relative times ("明天", "tomorrow", "Friday") to absolute ISO 8601 using the provided current time
-   - All due_time must be AFTER current time; if resolved time is in the past, push to next occurrence
-   - If no time is mentioned at all, set to null
+Reject when:
+- content is garbled/incomprehensible
+- content does not match OCR snippet
+- output cannot satisfy strict target language
 
-Reject if:
-- Content is garbled, incomprehensible, or contains OCR artifacts
-- Content doesn't match the OCR snippet at all (hallucination)
-- Content is too vague to be a useful to-do item
-- Content is a truncated fragment with meaningless action target (e.g. "Investigate Oj&") — do NOT salvage, just reject
-- Content cannot be expressed in strict ${language} output as required
+Respond in JSON:
+{"approved": true/false, "refined_content": "string", "refined_due_time": "YYYY-MM-DDTHH:mm or null", "refined_urgent": true/false, "refined_actionable": true/false, "refined_noteworthy": true/false, "reason": "brief explanation"}
 
-Respond in JSON format:
-{"approved": true/false, "refined_content": "refined sentence in ${language}", "refined_type": "reminder|todo|meeting|deadline|note", "refined_due_time": "YYYY-MM-DDTHH:mm or null", "reason": "brief explanation"}
-
-Respond ONLY with JSON, no other text.`;
+Respond ONLY with JSON.`;
 }
 
 function extractReviewJson(text: string): Record<string, unknown> | null {
@@ -117,16 +112,21 @@ function extractReviewJson(text: string): Record<string, unknown> | null {
 
 /**
  * Two-stage review of an IntentResult using a large model.
- * Returns the (possibly refined) IntentResult, or null if review fails and failOpen is false.
+ * Returns refined IntentResult, or null if review fails and failOpen is false.
  */
 export async function reviewIntent(
   provider: LlmProvider,
   intent: IntentResult,
   context?: ReviewContext
 ): Promise<IntentResult | null> {
-  // Stage 1: Actionability check
+  // Stage 1: Validate actionable/noteworthy
+  const stage1ResultIntent: IntentResult = { ...intent };
   try {
-    let input1 = `Task type: ${intent.type}\nContent: ${intent.content}\nDue time: ${intent.due_time || "none"}`;
+    let input1 = `Content: ${intent.content}`;
+    input1 += `\nActionable: ${intent.actionable}`;
+    input1 += `\nNoteworthy: ${intent.noteworthy}`;
+    input1 += `\nUrgent: ${intent.urgent}`;
+    input1 += `\nDue time: ${intent.due_time || "none"}`;
     if (context) {
       input1 += `\nSource app: ${context.sourceApp}`;
       input1 += `\nTrigger: ${context.trigger}`;
@@ -135,87 +135,128 @@ export async function reviewIntent(
       }
     }
 
-    console.log(`${BOLD}${CYAN}[review] ☁️  CLOUD API CALL — stage 1: actionability check${RESET}`);
+    console.log(`${BOLD}${CYAN}[review] ☁️  CLOUD API CALL — stage 1: intent validation${RESET}`);
     console.log(`${CYAN}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
     const response1 = await provider.chat(
       [
-        { role: "system", content: ACTIONABILITY_PROMPT },
+        { role: "system", content: INTENT_VALIDATION_PROMPT },
         { role: "user", content: input1 },
       ],
-      { temperature: 0.1, maxTokens: 200 },
+      { temperature: 0.1, maxTokens: 512 },
     );
 
     const result1 = extractReviewJson(response1);
-    if (result1 && result1.approved === false) {
-      console.log(`${RED}[review] ✗ stage 1 REJECTED: ${result1.reason}${RESET}`);
-      return { ...intent, actionable: false };
+    if (result1) {
+      const reviewedActionable = typeof result1.actionable === "boolean"
+        ? intent.actionable && result1.actionable
+        : intent.actionable;
+      const reviewedNoteworthy = typeof result1.noteworthy === "boolean"
+        ? intent.noteworthy && result1.noteworthy
+        : intent.noteworthy;
+      stage1ResultIntent.actionable = reviewedActionable;
+      stage1ResultIntent.noteworthy = reviewedNoteworthy;
+      console.log(
+        `${GREEN}[review] ✓ stage 1: actionable=${reviewedActionable}, noteworthy=${reviewedNoteworthy} (${result1.reason || "ok"})${RESET}`
+      );
+    } else {
+      console.log(`${YELLOW}[review] stage 1 returned non-JSON, keep original flags${RESET}`);
+      console.log(`${YELLOW}[review] stage 1 raw response: "${summarizeRawResponse(response1)}"${RESET}`);
     }
-    console.log(`${GREEN}[review] ✓ stage 1 passed: ${result1?.reason || "ok"}${RESET}`);
+
+    if (!stage1ResultIntent.actionable && !stage1ResultIntent.noteworthy) {
+      console.log(`${RED}[review] ✗ stage 1 rejected both actionable/noteworthy${RESET}`);
+      return stage1ResultIntent;
+    }
   } catch (err) {
     console.error(`${RED}[review] stage 1 error:${RESET}`, err);
     throw err;
   }
 
-  // Stage 2: Content refinement
+  // Stage 2: Refine content
   try {
     const lang = context?.language || "zh-CN";
     console.log(`${BOLD}${MAGENTA}[review] ☁️  CLOUD API CALL — stage 2: content refinement (${lang})${RESET}`);
-    console.log(`${MAGENTA}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
+    console.log(`${MAGENTA}[review] → sending to cloud: "${stage1ResultIntent.content.substring(0, 80)}"${RESET}`);
     const now = new Date();
     const isoNow = now.toISOString().slice(0, 16);
     let input2 = `Target output language (strict): ${lang}`;
-    input2 += `\nContent: ${intent.content}`;
-    input2 += `\nExtracted type: ${intent.type}`;
-    input2 += `\nExtracted due_time: ${intent.due_time || "null"}`;
+    input2 += `\nContent: ${stage1ResultIntent.content}`;
+    input2 += `\nActionable: ${stage1ResultIntent.actionable}`;
+    input2 += `\nNoteworthy: ${stage1ResultIntent.noteworthy}`;
+    input2 += `\nUrgent: ${stage1ResultIntent.urgent}`;
+    input2 += `\nExtracted due_time: ${stage1ResultIntent.due_time || "null"}`;
     input2 += `\nCurrent time: ${isoNow}`;
     if (context?.textSnippet) {
       input2 += `\nOCR snippet: ${context.textSnippet}`;
     }
+
     const response2 = await provider.chat(
       [
         { role: "system", content: buildQualityPrompt(lang) },
         { role: "user", content: input2 },
       ],
-      { temperature: 0.1, maxTokens: 300 },
+      { temperature: 0.1, maxTokens: 1024 },
     );
 
     const result2 = extractReviewJson(response2);
     if (result2 && result2.approved === false) {
       console.log(`${RED}[review] ✗ stage 2 REJECTED: ${result2.reason}${RESET}`);
-      return { ...intent, actionable: false };
+      return { ...stage1ResultIntent, actionable: false, noteworthy: false };
     }
 
-    // Apply refined fields from Gemini, falling back to small model values
-    if (result2) {
-      const validTypes = ["reminder", "todo", "meeting", "deadline", "note"];
-      const refinedContent = typeof result2.refined_content === "string"
-        ? result2.refined_content.substring(0, 200)
-        : intent.content;
-      const refinedType = typeof result2.refined_type === "string" && validTypes.includes(result2.refined_type as string)
-        ? (result2.refined_type as IntentResult["type"])
-        : intent.type;
-      const refinedDueTime = result2.refined_due_time === null
-        ? null
-        : typeof result2.refined_due_time === "string" && result2.refined_due_time !== "null"
-          ? result2.refined_due_time as string
-          : intent.due_time;
-
-      const changed: string[] = [];
-      if (refinedContent !== intent.content) changed.push("content");
-      if (refinedType !== intent.type) changed.push(`type:${intent.type}→${refinedType}`);
-      if (refinedDueTime !== intent.due_time) changed.push(`due:${intent.due_time}→${refinedDueTime}`);
-
-      if (changed.length > 0) {
-        console.log(`${YELLOW}[review] ✎ refined [${changed.join(", ")}]: "${refinedContent.substring(0, 40)}"${RESET}`);
-      } else {
-        console.log(`${GREEN}[review] ✓ stage 2 passed (no changes): ${result2.reason || "ok"}${RESET}`);
-      }
-
-      return { ...intent, content: refinedContent, type: refinedType, due_time: refinedDueTime };
+    if (!result2) {
+      console.log(`${YELLOW}[review] stage 2 returned non-JSON, keep stage 1 result${RESET}`);
+      console.log(`${YELLOW}[review] stage 2 raw response: "${summarizeRawResponse(response2)}"${RESET}`);
+      return stage1ResultIntent;
     }
 
-    console.log(`${GREEN}[review] ✓ stage 2 passed: ok${RESET}`);
-    return intent;
+    const refinedContent = typeof result2.refined_content === "string"
+      ? result2.refined_content.substring(0, 200)
+      : stage1ResultIntent.content;
+    const refinedDueTime = result2.refined_due_time === null
+      ? null
+      : typeof result2.refined_due_time === "string" && result2.refined_due_time !== "null"
+        ? result2.refined_due_time
+        : stage1ResultIntent.due_time;
+    const refinedUrgent = typeof result2.refined_urgent === "boolean"
+      ? result2.refined_urgent
+      : stage1ResultIntent.urgent;
+    const refinedActionable = typeof result2.refined_actionable === "boolean"
+      ? stage1ResultIntent.actionable && result2.refined_actionable
+      : stage1ResultIntent.actionable;
+    const refinedNoteworthy = typeof result2.refined_noteworthy === "boolean"
+      ? stage1ResultIntent.noteworthy && result2.refined_noteworthy
+      : stage1ResultIntent.noteworthy;
+
+    const changed: string[] = [];
+    if (refinedContent !== stage1ResultIntent.content) changed.push("content");
+    if (refinedDueTime !== stage1ResultIntent.due_time) {
+      changed.push(`due:${stage1ResultIntent.due_time}→${refinedDueTime}`);
+    }
+    if (refinedUrgent !== stage1ResultIntent.urgent) {
+      changed.push(`urgent:${stage1ResultIntent.urgent}→${refinedUrgent}`);
+    }
+    if (refinedActionable !== stage1ResultIntent.actionable) {
+      changed.push(`actionable:${stage1ResultIntent.actionable}→${refinedActionable}`);
+    }
+    if (refinedNoteworthy !== stage1ResultIntent.noteworthy) {
+      changed.push(`noteworthy:${stage1ResultIntent.noteworthy}→${refinedNoteworthy}`);
+    }
+
+    if (changed.length > 0) {
+      console.log(`${YELLOW}[review] ✎ refined [${changed.join(", ")}]: "${refinedContent.substring(0, 40)}"${RESET}`);
+    } else {
+      console.log(`${GREEN}[review] ✓ stage 2 passed (no changes): ${result2.reason || "ok"}${RESET}`);
+    }
+
+    return {
+      ...stage1ResultIntent,
+      content: refinedContent,
+      due_time: refinedDueTime,
+      urgent: refinedUrgent,
+      actionable: refinedActionable,
+      noteworthy: refinedNoteworthy,
+    };
   } catch (err) {
     console.error(`${RED}[review] stage 2 error:${RESET}`, err);
     throw err;

@@ -44,6 +44,17 @@ export interface RemindersConfig {
   list: string;
 }
 
+export interface NotesConfig {
+  enabled: boolean;
+  folder: string;
+}
+
+export interface DedupConfig {
+  actionableThreshold: number;
+  noteworthyThreshold: number;
+  lookbackDays: number;
+}
+
 export interface PipeConfig {
   filter: FilterConfig;
   capture: CaptureConfig;
@@ -51,6 +62,8 @@ export interface PipeConfig {
   outputLanguage: string;
   notification: NotificationConfig;
   reminders: RemindersConfig;
+  notes: NotesConfig;
+  dedup: DedupConfig;
 }
 
 export interface EffectiveConfigSnapshot {
@@ -109,6 +122,17 @@ const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
 const DEFAULT_REMINDERS_CONFIG: RemindersConfig = {
   enabled: false,
   list: "LivePipe",
+};
+
+const DEFAULT_NOTES_CONFIG: NotesConfig = {
+  enabled: false,
+  folder: "LivePipe",
+};
+
+const DEFAULT_DEDUP_CONFIG: DedupConfig = {
+  actionableThreshold: 0.6,
+  noteworthyThreshold: 0.8,
+  lookbackDays: 7,
 };
 
 const DEFAULT_OUTPUT_LANGUAGE = "zh-CN";
@@ -204,6 +228,31 @@ const pipeConfigSchema = z
         list: z.string().trim().min(1, "must be a non-empty string").default(DEFAULT_REMINDERS_CONFIG.list),
       })
       .default(DEFAULT_REMINDERS_CONFIG),
+    notes: z
+      .object({
+        enabled: z.boolean().default(DEFAULT_NOTES_CONFIG.enabled),
+        folder: z.string().trim().min(1, "must be a non-empty string").default(DEFAULT_NOTES_CONFIG.folder),
+      })
+      .default(DEFAULT_NOTES_CONFIG),
+    dedup: z
+      .object({
+        actionableThreshold: z
+          .number()
+          .min(0, "must be >= 0")
+          .max(1, "must be <= 1")
+          .default(DEFAULT_DEDUP_CONFIG.actionableThreshold),
+        noteworthyThreshold: z
+          .number()
+          .min(0, "must be >= 0")
+          .max(1, "must be <= 1")
+          .default(DEFAULT_DEDUP_CONFIG.noteworthyThreshold),
+        lookbackDays: z
+          .number()
+          .int("must be an integer")
+          .min(1, "must be >= 1")
+          .default(DEFAULT_DEDUP_CONFIG.lookbackDays),
+      })
+      .default(DEFAULT_DEDUP_CONFIG),
   })
   .passthrough();
 
@@ -221,6 +270,11 @@ const HOT_RELOAD_FIELDS = new Set([
   "notification.webhooks",
   "reminders.enabled",
   "reminders.list",
+  "notes.enabled",
+  "notes.folder",
+  "dedup.actionableThreshold",
+  "dedup.noteworthyThreshold",
+  "dedup.lookbackDays",
 ]);
 
 const RESTART_REQUIRED_FIELDS = new Set(["capture.mode", "capture.hotkeyHoldMs"]);
@@ -288,6 +342,11 @@ function getComparableFields(config: PipeConfig): Record<string, unknown> {
     "notification.webhooks": config.notification.webhooks,
     "reminders.enabled": config.reminders.enabled,
     "reminders.list": config.reminders.list,
+    "notes.enabled": config.notes.enabled,
+    "notes.folder": config.notes.folder,
+    "dedup.actionableThreshold": config.dedup.actionableThreshold,
+    "dedup.noteworthyThreshold": config.dedup.noteworthyThreshold,
+    "dedup.lookbackDays": config.dedup.lookbackDays,
   };
 }
 

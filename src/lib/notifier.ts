@@ -2,14 +2,6 @@ import { exec } from "child_process";
 import type { IntentResult } from "./schemas";
 import { getPipeConfig, type NotificationConfig, type WebhookConfig } from "./pipe-config";
 
-const TYPE_LABELS: Record<string, string> = {
-  reminder: "Reminder",
-  todo: "To-Do",
-  meeting: "Meeting",
-  deadline: "Deadline",
-  note: "Note",
-};
-
 const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
   desktop: true,
   webhooks: [],
@@ -29,14 +21,14 @@ function escapeAppleScript(str: string): string {
 }
 
 function buildNotificationMessage(result: IntentResult): {
-  typeLabel: string;
   title: string;
   body: string;
 } {
-  const typeLabel = TYPE_LABELS[result.type] || result.type;
-  const title = "Maybe Need Action";
-  const body = result.content;
-  return { typeLabel, title, body };
+  const title = result.urgent ? "Urgent Action" : "Maybe Need Action";
+  const body = result.due_time
+    ? `${result.content}\nDue: ${result.due_time}`
+    : result.content;
+  return { title, body };
 }
 
 async function sendDesktopNotification(title: string, body: string): Promise<void> {
@@ -60,7 +52,6 @@ async function sendDesktopNotification(title: string, body: string): Promise<voi
 function buildWebhookPayload(
   config: WebhookConfig,
   result: IntentResult,
-  typeLabel: string,
   title: string,
   body: string
 ): unknown {
@@ -85,10 +76,10 @@ function buildWebhookPayload(
     timestamp: new Date().toISOString(),
     title,
     body,
-    type: result.type,
-    typeLabel,
     dueTime: result.due_time,
     actionable: result.actionable,
+    noteworthy: result.noteworthy,
+    urgent: result.urgent,
     content: result.content,
   };
 }
@@ -96,7 +87,6 @@ function buildWebhookPayload(
 async function sendWebhookNotification(
   config: WebhookConfig,
   result: IntentResult,
-  typeLabel: string,
   title: string,
   body: string
 ): Promise<void> {
@@ -109,7 +99,7 @@ async function sendWebhookNotification(
     return;
   }
 
-  const payload = buildWebhookPayload(config, result, typeLabel, title, body);
+  const payload = buildWebhookPayload(config, result, title, body);
   const headers = {
     "Content-Type": "application/json",
     ...(config.headers ?? {}),
@@ -137,7 +127,7 @@ async function sendWebhookNotification(
 }
 
 export async function sendNotification(result: IntentResult): Promise<void> {
-  const { typeLabel, title, body } = buildNotificationMessage(result);
+  const { title, body } = buildNotificationMessage(result);
   const notificationConfig = getNotificationConfig();
 
   const jobs: Promise<void>[] = [];
@@ -147,7 +137,7 @@ export async function sendNotification(result: IntentResult): Promise<void> {
   }
 
   for (const webhook of notificationConfig.webhooks) {
-    jobs.push(sendWebhookNotification(webhook, result, typeLabel, title, body));
+    jobs.push(sendWebhookNotification(webhook, result, title, body));
   }
 
   await Promise.all(jobs);

@@ -13,7 +13,7 @@ export interface ReminderTask {
 
 export interface ReminderSyncEntry {
   content: string;
-  type: string;
+  urgent: boolean;
   dueTime: string | null;
   detected: string;
 }
@@ -210,10 +210,8 @@ export async function createReminder(listName: string, task: ReminderTask): Prom
   return result.id ?? "";
 }
 
-export function mapTaskTypeToReminderPriority(type: string): number {
-  if (type === "deadline") return 1;
-  if (type === "meeting") return 5;
-  return 0;
+export function mapUrgencyToReminderPriority(urgent: boolean): number {
+  return urgent ? 1 : 0;
 }
 
 export function normalizeDueDateForReminder(dueTime: string | null): string | undefined {
@@ -266,7 +264,7 @@ export async function syncTaskToReminders(entry: ReminderSyncEntry): Promise<voi
     name: entry.content,
     body: buildReminderBody(entry),
     dueDate,
-    priority: mapTaskTypeToReminderPriority(entry.type),
+    priority: mapUrgencyToReminderPriority(entry.urgent),
   });
 
   console.log(`[reminders] synced task to list "${listName}"${reminderId ? ` (id=${reminderId})` : ""}`);

@@ -5,7 +5,7 @@
 
 > **Low-Key Preview** — 当前版本不稳定，效果欠佳，仅供研究与测试。
 
-LivePipe 通过 OCR 实时监控你的屏幕，用本地大模型识别其中的可执行事项（待办、提醒、会议、截止日期），然后推送到桌面通知、Webhook 或 Apple Reminders。无需手动输入——正常工作就好，LivePipe 帮你捕捉关键信息。
+LivePipe 通过 OCR 实时监控你的屏幕，用本地大模型识别双维度意图（`actionable` + `noteworthy`），并分发到桌面通知、Webhook、Apple Reminders 与 Apple Notes。无需手动输入——正常工作就好，LivePipe 帮你捕捉关键信息。
 
 ## 工作原理
 
@@ -20,7 +20,7 @@ Local LLM（Ollama / Qwen 1.7B）── 快速意图识别
     ↓
 云端审查（可选，Gemini）── 过滤误报
     ↓
-通知 ── 桌面 / 飞书 / Telegram / Webhook / Apple Reminders
+通知与同步 ── 桌面 / 飞书 / Telegram / Webhook / Apple Reminders / Apple Notes
 ```
 
 管道每分钟运行一次。本地模型速度快但噪声较多；开启云端审查可以显著减少误报，代价是每个检测到的事项需要一次 API 调用。
@@ -67,7 +67,7 @@ bun run dev
 
 - **Screen Recording** — Screenpipe 捕获屏幕内容所需
 - **Notifications** — 桌面通知所需
-- **Automation (Reminders)** — 仅当 `reminders.enabled` 为 `true` 时需要
+- **Automation (Reminders / Notes)** — 仅当 `reminders.enabled` 或 `notes.enabled` 为 `true` 时需要
 
 ## 配置
 
@@ -137,7 +137,7 @@ bun run dev
 }
 ```
 
-支持的 provider：`feishu`、`telegram`、`generic`（发送包含 `title`、`body`、`type`、`dueTime` 的 JSON）。
+支持的 provider：`feishu`、`telegram`、`generic`（发送包含 `title`、`body`、`actionable`、`noteworthy`、`urgent`、`dueTime` 的 JSON）。
 
 ### Apple Reminders 同步
 
@@ -155,6 +155,23 @@ bun run dev
 - 默认关闭，更安全
 - 目标列表不存在时会自动创建
 - 同步采用 fire-and-forget 模式——失败仅记录日志，不阻塞主流程
+
+### Apple Notes 同步
+
+将 noteworthy 内容单向追加到 Apple Notes（按天聚合）：
+
+```json
+{
+  "notes": {
+    "enabled": false,
+    "folder": "LivePipe"
+  }
+}
+```
+
+- 默认关闭，更安全
+- 目标文件夹不存在时会自动创建
+- 每条 noteworthy 内容会追加到当天笔记
 
 ### 输出语言
 

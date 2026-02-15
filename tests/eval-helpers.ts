@@ -10,7 +10,8 @@ export type FixtureCategory = "chat" | "email" | "calendar" | "noise" | "code" |
 
 export interface FixtureExpectation {
   actionable: boolean;
-  type?: IntentResult["type"];
+  noteworthy: boolean;
+  urgent: boolean;
   hasTime?: boolean;
   contentLike?: string;
 }
@@ -46,7 +47,8 @@ export interface EvalMetrics {
   precision: number;
   recall: number;
   f1: number;
-  typeAccuracy: number | null;
+  noteworthyAccuracy: number;
+  urgentAccuracy: number;
   timeAccuracy: number | null;
   contentAccuracy: number | null;
   avgLatencyMs: number;
@@ -65,9 +67,10 @@ const SPINNER_FRAMES = ["|", "/", "-", "\\"];
 
 const DEFAULT_RESULT: IntentResult = {
   actionable: false,
-  type: "note",
+  noteworthy: false,
   content: "",
   due_time: null,
+  urgent: false,
 };
 
 const CATEGORY_ORDER: FixtureCategory[] = ["chat", "email", "calendar", "noise", "code", "mixed"];
@@ -156,9 +159,10 @@ function normalizeResult(result: IntentResult | null): IntentResult {
 
   return {
     actionable: Boolean(result.actionable),
-    type: result.type,
+    noteworthy: Boolean(result.noteworthy),
     content: typeof result.content === "string" ? result.content : "",
     due_time: typeof result.due_time === "string" ? result.due_time : null,
+    urgent: Boolean(result.urgent),
   };
 }
 
@@ -237,8 +241,8 @@ export function calcMetrics(results: FixtureRunResult[]): EvalMetrics {
   let trueNegative = 0;
   let falsePositive = 0;
   let falseNegative = 0;
-  let typeCorrect = 0;
-  let typeTotal = 0;
+  let noteworthyCorrect = 0;
+  let urgentCorrect = 0;
   let timeCorrect = 0;
   let timeTotal = 0;
   let contentCorrect = 0;
@@ -256,7 +260,11 @@ export function calcMetrics(results: FixtureRunResult[]): EvalMetrics {
 
   for (const item of results) {
     const expectedActionable = item.fixture.expect.actionable;
+    const expectedNoteworthy = item.fixture.expect.noteworthy;
+    const expectedUrgent = item.fixture.expect.urgent;
     const predictedActionable = item.actual.actionable;
+    const predictedNoteworthy = item.actual.noteworthy;
+    const predictedUrgent = item.actual.urgent;
     totalLatencyMs += item.durationMs;
 
     if (expectedActionable && predictedActionable) truePositive++;
@@ -264,12 +272,8 @@ export function calcMetrics(results: FixtureRunResult[]): EvalMetrics {
     if (!expectedActionable && predictedActionable) falsePositive++;
     if (expectedActionable && !predictedActionable) falseNegative++;
 
-    if (item.fixture.expect.type) {
-      typeTotal++;
-      if (item.actual.type === item.fixture.expect.type) {
-        typeCorrect++;
-      }
-    }
+    if (expectedNoteworthy === predictedNoteworthy) noteworthyCorrect++;
+    if (expectedUrgent === predictedUrgent) urgentCorrect++;
 
     if (item.fixture.expect.hasTime !== undefined) {
       timeTotal++;
@@ -306,7 +310,8 @@ export function calcMetrics(results: FixtureRunResult[]): EvalMetrics {
     precision,
     recall,
     f1,
-    typeAccuracy: typeTotal > 0 ? typeCorrect / typeTotal : null,
+    noteworthyAccuracy: safeDivide(noteworthyCorrect, results.length),
+    urgentAccuracy: safeDivide(urgentCorrect, results.length),
     timeAccuracy: timeTotal > 0 ? timeCorrect / timeTotal : null,
     contentAccuracy: contentTotal > 0 ? contentCorrect / contentTotal : null,
     avgLatencyMs: results.length > 0 ? totalLatencyMs / results.length : 0,
@@ -347,6 +352,8 @@ export function formatMetricsReport(metrics: EvalMetrics): string {
     `| Recall | ${toPercent(metrics.recall)} | Share of real tasks successfully detected (higher means fewer misses) |`,
     `| Precision | ${toPercent(metrics.precision)} | Share of predicted tasks that are truly actionable (higher means fewer false alarms) |`,
     `| F1 | ${toPercent(metrics.f1)} | Balanced score of recall and precision |`,
+    `| Noteworthy Accuracy | ${toPercent(metrics.noteworthyAccuracy)} | Correctness of noteworthy dimension |`,
+    `| Urgent Accuracy | ${toPercent(metrics.urgentAccuracy)} | Correctness of urgency dimension |`,
     `| False Negatives (FN) | ${metrics.falseNegative}/${totalPositive} | Real tasks that the model missed |`,
     `| False Positives (FP) | ${metrics.falsePositive}/${totalPredictedPositive} | Non-tasks incorrectly predicted as tasks |`,
     `| Sample Size | ${metrics.total} | Total fixtures in this evaluation run |`,

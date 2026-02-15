@@ -5,7 +5,7 @@
 
 > **Low-Key Preview** — This version is unstable and underperforms; for research and testing only.
 
-LivePipe watches your screen in real time through OCR, uses a local LLM to detect actionable items — todos, reminders, meetings, deadlines — and pushes them to you as desktop notifications, webhooks, or Apple Reminders. No manual input required: just work normally, and LivePipe catches what matters.
+LivePipe watches your screen in real time through OCR, uses a local LLM to detect two intent dimensions (`actionable` + `noteworthy`), and routes them to desktop notifications, webhooks, Apple Reminders, and Apple Notes. No manual input required: just work normally, and LivePipe catches what matters.
 
 ## How It Works
 
@@ -20,7 +20,7 @@ Deduplication ── avoid duplicate alerts
     ↓
 Cloud Review (optional, Gemini) ── filter false positives
     ↓
-Notify ── Desktop / Feishu / Telegram / Webhook / Apple Reminders
+Notify & Sync ── Desktop / Feishu / Telegram / Webhook / Apple Reminders / Apple Notes
 ```
 
 The pipeline runs every minute. The local model is fast but noisy; enabling cloud review significantly reduces false positives at the cost of an API call per detected item.
@@ -67,7 +67,7 @@ Grant your terminal the following in **System Settings > Privacy & Security**:
 
 - **Screen Recording** — for Screenpipe to capture screen content
 - **Notifications** — for desktop alerts
-- **Automation (Reminders)** — only if `reminders.enabled` is `true`
+- **Automation (Reminders / Notes)** — only if `reminders.enabled` or `notes.enabled` is `true`
 
 ## Configuration
 
@@ -137,7 +137,7 @@ Desktop notifications are on by default. Add webhooks for push to other apps:
 }
 ```
 
-Supported providers: `feishu`, `telegram`, `generic` (sends JSON with `title`, `body`, `type`, `dueTime`).
+Supported providers: `feishu`, `telegram`, `generic` (sends JSON with `title`, `body`, `actionable`, `noteworthy`, `urgent`, `dueTime`).
 
 ### Apple Reminders Sync
 
@@ -155,6 +155,23 @@ Push detected tasks into Apple Reminders (one-way):
 - Off by default for safety
 - The target list is auto-created if it doesn't exist
 - Sync is fire-and-forget — failures are logged but don't block the pipeline
+
+### Apple Notes Sync
+
+Append noteworthy content into Apple Notes (one-way, grouped by day):
+
+```json
+{
+  "notes": {
+    "enabled": false,
+    "folder": "LivePipe"
+  }
+}
+```
+
+- Off by default for safety
+- The target folder is auto-created if it doesn't exist
+- Each noteworthy entry is appended into a daily note
 
 ### Output Language
 

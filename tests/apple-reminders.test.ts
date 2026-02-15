@@ -1,15 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   escapeJXA,
-  mapTaskTypeToReminderPriority,
+  mapUrgencyToReminderPriority,
   normalizeDueDateForReminder,
 } from "../src/lib/apple-reminders";
 
 describe("apple reminders helpers", () => {
-  test("maps task types to reminder priority", () => {
-    expect(mapTaskTypeToReminderPriority("deadline")).toBe(1);
-    expect(mapTaskTypeToReminderPriority("meeting")).toBe(5);
-    expect(mapTaskTypeToReminderPriority("todo")).toBe(0);
+  test("maps urgency to reminder priority", () => {
+    expect(mapUrgencyToReminderPriority(true)).toBe(1);
+    expect(mapUrgencyToReminderPriority(false)).toBe(0);
   });
 
   test("normalizes due date only when parseable", () => {
