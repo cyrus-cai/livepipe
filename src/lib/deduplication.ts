@@ -5,6 +5,7 @@ import type { IntentResult } from "./schemas";
 import { syncTaskToReminders } from "./apple-reminders";
 import { syncMemoToAppleNotes } from "./apple-notes";
 import { getPipeConfig } from "./pipe-config";
+import { debugLog, debugError, type DedupResult } from "./pipeline-logger";
 
 const DEFAULT_ACTIONABLE_THRESHOLD = 0.6;
 const DEFAULT_NOTEWORTHY_THRESHOLD = 0.8;
@@ -52,7 +53,7 @@ function getDedupRuntimeConfig(): DedupRuntimeConfig {
       lookbackDays: config.lookbackDays,
     };
   } catch (error) {
-    console.error("[dedup] failed to read dedup config, fallback to defaults:", error);
+    debugError("[dedup] failed to read dedup config, fallback to defaults:", error);
     return {
       actionableThreshold: DEFAULT_ACTIONABLE_THRESHOLD,
       noteworthyThreshold: DEFAULT_NOTEWORTHY_THRESHOLD,
@@ -131,9 +132,9 @@ function loadRawEntries(file: string, cacheTarget: "actionable" | "noteworthy"):
       const entry = parseRawLine(line.trim());
       if (entry) cache.push(entry);
     }
-    console.log(`[dedup-raw-${cacheTarget}] loaded ${cache.length} entries from ${file}`);
+    debugLog(`[dedup] loaded ${cache.length} ${cacheTarget} raw entries`);
   } catch (err) {
-    console.error(`[dedup-raw-${cacheTarget}] failed to read ${file}:`, err);
+    debugError(`[dedup] failed to read ${file}:`, err);
   }
 
   if (cacheTarget === "actionable") actionableRawInitialized = true;
@@ -154,10 +155,13 @@ function appendRawToFile(file: string, entry: RawEntry): void {
   writeFileSync(file, line, { flag: "a" });
 }
 
-function shouldProcessInRawCache(
+/**
+ * Check content against raw cache and return a structured DedupResult.
+ */
+function checkRawCache(
   content: string,
   mode: "actionable" | "noteworthy",
-): boolean {
+): DedupResult {
   const dedupConfig = getDedupRuntimeConfig();
   const threshold = mode === "actionable"
     ? dedupConfig.actionableThreshold
@@ -170,22 +174,24 @@ function shouldProcessInRawCache(
   const cutoff = new Date(now.getTime() - dedupConfig.lookbackDays * 24 * 60 * 60 * 1000);
   const cutoffStr = cutoff.toISOString();
 
-  console.log(`[dedup-raw-${mode}] checking "${content.substring(0, 60)}" against ${cache.length} entries (cutoff=${cutoffStr.substring(0, 10)})`);
+  debugLog(`[dedup] checking "${content.substring(0, 60)}" against ${cache.length} entries (cutoff=${cutoffStr.substring(0, 10)})`);
 
   for (const entry of cache) {
     if (entry.detected < cutoffStr) continue;
 
     const sim = similarity(content, entry.content);
     if (sim >= threshold) {
-      console.log(
-        `[dedup-raw-${mode}] skipping similar content (${(sim * 100).toFixed(0)}% match, threshold=${(
-          threshold * 100
-        ).toFixed(0)}%): "${content.substring(0, 50)}"`
-      );
-      return false;
+      debugLog(`[dedup] match: ${(sim * 100).toFixed(0)}% with "${entry.content.substring(0, 60)}"`);
+      return {
+        passed: false,
+        reason: `${(sim * 100).toFixed(0)}% match`,
+        similarity: sim,
+        cacheSize: cache.length,
+        threshold,
+      };
     }
     if (sim > 0.3) {
-      console.log(`[dedup-raw-${mode}] near-miss: sim=${(sim * 100).toFixed(0)}% with "${entry.content.substring(0, 60)}"`);
+      debugLog(`[dedup] near-miss: ${(sim * 100).toFixed(0)}% with "${entry.content.substring(0, 60)}"`);
     }
   }
 
@@ -195,7 +201,12 @@ function shouldProcessInRawCache(
   };
   cache.push(entry);
   appendRawToFile(rawFile, entry);
-  return true;
+  return {
+    passed: true,
+    reason: "new content",
+    cacheSize: cache.length,
+    threshold,
+  };
 }
 
 /**
@@ -214,35 +225,39 @@ export function loadMemoRawFromFile(): void {
 
 /**
  * Check if actionable content should proceed based on tasks-raw.md dedup.
+ * Returns structured DedupResult.
  */
-export function shouldProcessActionable(result: IntentResult): boolean {
-  if (!result.actionable) return false;
+export function checkActionableDedup(result: IntentResult): DedupResult {
+  if (!result.actionable) return { passed: false, reason: "not actionable" };
   if (!actionableRawInitialized) loadRawFromFile();
-  return shouldProcessInRawCache(result.content, "actionable");
+  return checkRawCache(result.content, "actionable");
 }
 
 /**
  * Check if noteworthy content should proceed based on memos-raw.md dedup.
+ * Returns structured DedupResult.
  */
-export function shouldProcessNoteworthy(result: IntentResult): boolean {
-  if (!result.noteworthy) return false;
+export function checkNoteworthyDedup(result: IntentResult): DedupResult {
+  if (!result.noteworthy) return { passed: false, reason: "not noteworthy" };
   if (!noteworthyRawInitialized) loadMemoRawFromFile();
-  return shouldProcessInRawCache(result.content, "noteworthy");
+  return checkRawCache(result.content, "noteworthy");
 }
 
-/**
- * Backward-compatible alias: actionable path dedup.
- */
+// Legacy boolean wrappers (kept for backward compatibility)
+export function shouldProcessActionable(result: IntentResult): boolean {
+  return checkActionableDedup(result).passed;
+}
+
+export function shouldProcessNoteworthy(result: IntentResult): boolean {
+  return checkNoteworthyDedup(result).passed;
+}
+
 export function shouldProcess(result: IntentResult): boolean {
   return shouldProcessActionable(result);
 }
 
 // === tasks.md: final actionable records ===
 
-/**
- * Parse a task line.
- * Supports both new format (urgent) and legacy format (type).
- */
 function parseTaskLine(line: string): TaskEntry | null {
   const match = line.match(/^- \[([ x])\] (.+)$/);
   if (!match) return null;
@@ -309,9 +324,9 @@ export function loadTasksFromFile(): void {
       const entry = parseTaskLine(line.trim());
       if (entry) taskCache.push(entry);
     }
-    console.log(`[dedup] loaded ${taskCache.length} tasks from ${TASKS_FILE}`);
+    debugLog(`[dedup] loaded ${taskCache.length} tasks`);
   } catch (err) {
-    console.error(`[dedup] failed to read ${TASKS_FILE}:`, err);
+    debugError(`[dedup] failed to read ${TASKS_FILE}:`, err);
   }
 
   taskInitialized = true;
@@ -353,12 +368,18 @@ function appendTaskToFile(entry: TaskEntry): void {
   }
 }
 
+export interface RecordResult {
+  remindersSynced: boolean;
+  reminderError?: string;
+}
+
 /**
  * Record an actionable intent to tasks.md and sync to reminders.
  * due_time in the past will be cleared.
+ * Returns a promise that resolves with sync status.
  */
-export function recordAndNotify(result: IntentResult): boolean {
-  if (!result.actionable) return false;
+export async function recordAndNotify(result: IntentResult): Promise<RecordResult> {
+  if (!result.actionable) return { remindersSynced: false };
 
   if (!taskInitialized) loadTasksFromFile();
 
@@ -367,7 +388,7 @@ export function recordAndNotify(result: IntentResult): boolean {
   if (dueTime) {
     const dueDate = new Date(dueTime);
     if (!Number.isNaN(dueDate.getTime()) && dueDate.getTime() < now.getTime()) {
-      console.log(`[dedup] due_time "${dueTime}" is in the past, clearing`);
+      debugLog(`[dedup] due_time "${dueTime}" is in the past, clearing`);
       dueTime = null;
     }
   }
@@ -383,31 +404,44 @@ export function recordAndNotify(result: IntentResult): boolean {
 
   taskCache.push(entry);
   appendTaskToFile(entry);
-  void syncTaskToReminders({
-    content: entry.content,
-    urgent: entry.urgent,
-    dueTime: entry.dueTime,
-    detected: entry.detected,
-  }).catch((error) => {
-    console.error("[reminders] sync error:", error);
-  });
 
-  return true;
+  try {
+    await syncTaskToReminders({
+      content: entry.content,
+      urgent: entry.urgent,
+      dueTime: entry.dueTime,
+      detected: entry.detected,
+    });
+    return { remindersSynced: true };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    debugError("[reminders] sync error:", msg);
+    return { remindersSynced: false, reminderError: msg };
+  }
+}
+
+export interface NoteRecordResult {
+  notesSynced: boolean;
+  notesError?: string;
 }
 
 /**
  * Sync noteworthy content to Apple Notes.
  */
-export function recordNoteworthy(result: IntentResult, sourceApp: string): boolean {
-  if (!result.noteworthy) return false;
-  void syncMemoToAppleNotes({
-    content: result.content,
-    sourceApp,
-    detectedAt: new Date().toISOString(),
-  }).catch((error) => {
-    console.error("[notes] sync error:", error);
-  });
-  return true;
+export async function recordNoteworthy(result: IntentResult, sourceApp: string): Promise<NoteRecordResult> {
+  if (!result.noteworthy) return { notesSynced: false };
+  try {
+    await syncMemoToAppleNotes({
+      content: result.content,
+      sourceApp,
+      detectedAt: new Date().toISOString(),
+    });
+    return { notesSynced: true };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    debugError("[notes] sync error:", msg);
+    return { notesSynced: false, notesError: msg };
+  }
 }
 
 /**
@@ -415,7 +449,8 @@ export function recordNoteworthy(result: IntentResult, sourceApp: string): boole
  */
 export function shouldNotify(result: IntentResult): boolean {
   if (!shouldProcessActionable(result)) return false;
-  return recordAndNotify(result);
+  void recordAndNotify(result);
+  return true;
 }
 
 /**
@@ -423,7 +458,8 @@ export function shouldNotify(result: IntentResult): boolean {
  */
 export function shouldSyncNoteworthy(result: IntentResult, sourceApp: string): boolean {
   if (!shouldProcessNoteworthy(result)) return false;
-  return recordNoteworthy(result, sourceApp);
+  void recordNoteworthy(result, sourceApp);
+  return true;
 }
 
 /**

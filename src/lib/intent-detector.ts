@@ -1,6 +1,7 @@
 import type { IntentResult } from "./schemas";
 import type { Batch } from "./batch-aggregator";
 import { DEFAULT_OLLAMA_MODEL, OLLAMA_CHAT_URL } from "./constants";
+import { debugError, debugLog } from "./pipeline-logger";
 
 const SYSTEM_PROMPT = `You are an intent detector for OCR screen text. Decide independently whether content is actionable and/or noteworthy. Do NOT rewrite, translate, or summarize.
 
@@ -77,6 +78,10 @@ Respond ONLY with JSON:
 
 export interface DetectOptions {
   hotkeyTriggered?: boolean;
+}
+
+export interface DetectIntentResult extends IntentResult {
+  latencyMs: number;
 }
 
 export function isGarbled(text: string): boolean {
@@ -245,13 +250,14 @@ export function extractJson(text: string): IntentResult | null {
 export async function detectIntent(
   batch: Batch,
   options?: DetectOptions
-): Promise<IntentResult | null> {
+): Promise<DetectIntentResult | null> {
+  const requestStartedAt = Date.now();
   const hotkeyTriggered = options?.hotkeyTriggered ?? false;
   const appsStr = [...batch.apps].join(", ");
   const cleanedText = cleanOcrText(batch.texts);
 
   if (cleanedText.length < 5) {
-    console.log("[intent] text too short after cleaning, skipping");
+    debugLog("[intent] text too short after cleaning, skipping");
     return null;
   }
 
@@ -269,10 +275,10 @@ ${cleanedText}
 JSON:`;
 
   try {
-    console.log(
+    debugLog(
       `[intent] analyzing ${cleanedText.length} chars from [${appsStr}]${hotkeyTriggered ? " (hotkey mode)" : ""}`
     );
-    console.log(`[intent] cleaned text sample: "${cleanedText.substring(0, 200)}${cleanedText.length > 200 ? "..." : ""}"`);
+    debugLog(`[intent] cleaned text sample: "${cleanedText.substring(0, 200)}${cleanedText.length > 200 ? "..." : ""}"`);
 
     const t0 = Date.now();
     const res = await fetch(OLLAMA_CHAT_URL, {
@@ -293,7 +299,7 @@ JSON:`;
     const latency = Date.now() - t0;
 
     if (!res.ok) {
-      console.error(`[intent] ollama HTTP ${res.status} (${latency}ms)`);
+      debugError(`[intent] ollama HTTP ${res.status} (${latency}ms)`);
       return null;
     }
 
@@ -303,15 +309,22 @@ JSON:`;
 
     const trimmed = content.replace(/```json?/g, "").replace(/```/g, "").trim();
     if (!trimmed) {
-      console.log(`[intent] empty response (${latency}ms)`);
-      return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
+      debugLog(`[intent] empty response (${latency}ms)`);
+      return {
+        actionable: false,
+        noteworthy: false,
+        content: "",
+        due_time: null,
+        urgent: false,
+        latencyMs: Date.now() - requestStartedAt,
+      };
     }
 
-    console.log(`[intent] LLM response (${latency}ms): ${trimmed.substring(0, 300)}`);
+    debugLog(`[intent] LLM response (${latency}ms): ${trimmed.substring(0, 300)}`);
 
     const result = extractJson(trimmed);
     if (!result) {
-      console.log("[intent] JSON parse failed, raw was:", trimmed.substring(0, 500));
+      debugLog("[intent] JSON parse failed, raw was:", trimmed.substring(0, 500));
       return null;
     }
 
@@ -319,17 +332,27 @@ JSON:`;
 
     // Filter out garbage/garbled content from bad OCR
     if ((normalizedResult.actionable || normalizedResult.noteworthy) && isGarbled(normalizedResult.content)) {
-      console.log(`[intent] content looks garbled, ignoring: "${normalizedResult.content}"`);
-      return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
+      debugLog(`[intent] content looks garbled, ignoring: "${normalizedResult.content}"`);
+      return {
+        actionable: false,
+        noteworthy: false,
+        content: "",
+        due_time: null,
+        urgent: false,
+        latencyMs: Date.now() - requestStartedAt,
+      };
     }
 
-    console.log(
+    debugLog(
       `[intent] => actionable=${normalizedResult.actionable}, noteworthy=${normalizedResult.noteworthy}, urgent=${normalizedResult.urgent}, content="${normalizedResult.content}", due="${normalizedResult.due_time}"`
     );
 
-    return normalizedResult;
+    return {
+      ...normalizedResult,
+      latencyMs: Date.now() - requestStartedAt,
+    };
   } catch (error) {
-    console.error("[intent] error:", error);
+    debugError("[intent] error:", error);
     return null;
   }
 }

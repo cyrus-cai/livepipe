@@ -1,17 +1,25 @@
 import { exec } from "child_process";
 import type { IntentResult } from "./schemas";
 import { getPipeConfig, type NotificationConfig, type WebhookConfig } from "./pipe-config";
+import { debugError, debugLog, type NotifyResult } from "./pipeline-logger";
 
 const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
   desktop: true,
   webhooks: [],
 };
 
+interface DeliveryResult {
+  ok: boolean;
+  channel: "desktop" | "webhook";
+  provider: string;
+  error?: string;
+}
+
 function getNotificationConfig(): NotificationConfig {
   try {
     return getPipeConfig().notification;
   } catch (error) {
-    console.error("[notify] failed to read notification config:", error);
+    debugError("[notify] failed to read notification config:", error);
     return DEFAULT_NOTIFICATION_CONFIG;
   }
 }
@@ -31,20 +39,24 @@ function buildNotificationMessage(result: IntentResult): {
   return { title, body };
 }
 
-async function sendDesktopNotification(title: string, body: string): Promise<void> {
+async function sendDesktopNotification(title: string, body: string): Promise<DeliveryResult> {
   const escapedTitle = escapeAppleScript(title);
   const escapedBody = escapeAppleScript(body);
-
   const script = `display notification "${escapedBody}" with title "${escapedTitle}" sound name "Glass"`;
 
-  await new Promise<void>((resolve) => {
+  return await new Promise<DeliveryResult>((resolve) => {
     exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (error) => {
       if (error) {
-        console.error("[notify] osascript error:", error.message);
-      } else {
-        console.log(`[notify] sent desktop notification: "${title}" — ${body}`);
+        resolve({
+          ok: false,
+          channel: "desktop",
+          provider: "desktop",
+          error: `desktop: ${error.message}`,
+        });
+        return;
       }
-      resolve();
+      debugLog(`[notify] sent desktop notification: "${title}"`);
+      resolve({ ok: true, channel: "desktop", provider: "desktop" });
     });
   });
 }
@@ -89,14 +101,20 @@ async function sendWebhookNotification(
   result: IntentResult,
   title: string,
   body: string
-): Promise<void> {
+): Promise<DeliveryResult | null> {
   if (config.enabled === false) {
-    return;
+    return null;
   }
 
+  const provider = config.provider ?? "generic";
+
   if (config.provider === "telegram" && !config.chatId) {
-    console.error(`[notify] telegram webhook missing chatId for ${config.url}`);
-    return;
+    return {
+      ok: false,
+      channel: "webhook",
+      provider,
+      error: `webhook(${provider}) missing chatId`,
+    };
   }
 
   const payload = buildWebhookPayload(config, result, title, body);
@@ -114,23 +132,37 @@ async function sendWebhookNotification(
 
     if (!response.ok) {
       const text = await response.text();
-      console.error(
-        `[notify] webhook failed (${response.status}) ${config.url}: ${text.slice(0, 300)}`
-      );
-      return;
+      return {
+        ok: false,
+        channel: "webhook",
+        provider,
+        error: `webhook(${provider}) HTTP ${response.status}: ${text.slice(0, 120)}`,
+      };
     }
 
-    console.log(`[notify] sent webhook notification (${config.provider ?? "generic"}): ${config.url}`);
+    debugLog(`[notify] sent webhook notification (${provider}): ${config.url}`);
+    return { ok: true, channel: "webhook", provider };
   } catch (error) {
-    console.error(`[notify] webhook error ${config.url}:`, error);
+    return {
+      ok: false,
+      channel: "webhook",
+      provider,
+      error: `webhook(${provider}) error: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
-export async function sendNotification(result: IntentResult): Promise<void> {
+export async function sendNotification(result: IntentResult): Promise<NotifyResult> {
   const { title, body } = buildNotificationMessage(result);
   const notificationConfig = getNotificationConfig();
 
-  const jobs: Promise<void>[] = [];
+  const summary: NotifyResult = {
+    desktop: false,
+    webhooks: [],
+    errors: [],
+  };
+
+  const jobs: Promise<DeliveryResult | null>[] = [];
 
   if (notificationConfig.desktop) {
     jobs.push(sendDesktopNotification(title, body));
@@ -140,5 +172,31 @@ export async function sendNotification(result: IntentResult): Promise<void> {
     jobs.push(sendWebhookNotification(webhook, result, title, body));
   }
 
-  await Promise.all(jobs);
+  const outcomes = await Promise.all(jobs);
+
+  for (const outcome of outcomes) {
+    if (!outcome) continue;
+
+    if (outcome.channel === "desktop") {
+      summary.desktop = outcome.ok;
+      if (!outcome.ok && outcome.error) {
+        summary.errors.push(outcome.error);
+      }
+      continue;
+    }
+
+    if (outcome.ok) {
+      if (!summary.webhooks.includes(outcome.provider)) {
+        summary.webhooks.push(outcome.provider);
+      }
+    } else if (outcome.error) {
+      summary.errors.push(outcome.error);
+    }
+  }
+
+  if (summary.errors.length > 0) {
+    debugError("[notify] failures:", summary.errors.join(" | "));
+  }
+
+  return summary;
 }

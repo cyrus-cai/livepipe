@@ -1,4 +1,5 @@
 import type { LlmProvider, ChatMessage, ChatOptions } from "../llm-provider";
+import { debugLog } from "../pipeline-logger";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_RETRIES = 2;
@@ -89,13 +90,13 @@ export function createGeminiProvider(config: GeminiConfig): LlmProvider {
         })();
 
         if (finishReason && finishReason !== "STOP") {
-          console.log(`[gemini] response (${latency}ms, ${text.length} chars) finishReason=${finishReason}`);
+          debugLog(`[gemini] response (${latency}ms, ${text.length} chars) finishReason=${finishReason}`);
         } else {
-          console.log(`[gemini] response (${latency}ms, ${text.length} chars)`);
+          debugLog(`[gemini] response (${latency}ms, ${text.length} chars)`);
         }
 
         if (!isValidJson && attempt < MAX_RETRIES) {
-          console.log(`[gemini] invalid JSON on attempt ${attempt + 1}, retrying... raw: "${text.substring(0, 80)}"`);
+          debugLog(`[gemini] invalid JSON on attempt ${attempt + 1}, retrying... raw: "${text.substring(0, 80)}"`);
           continue;
         }
 

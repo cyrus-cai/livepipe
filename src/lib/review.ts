@@ -1,5 +1,6 @@
 import type { LlmProvider } from "./llm-provider";
 import type { IntentResult } from "./schemas";
+import { debugError, debugLog, type ReviewResult } from "./pipeline-logger";
 
 /**
  * Lightweight context passed alongside IntentResult to help the cloud reviewer
@@ -16,14 +17,10 @@ export interface ReviewContext {
   language: string;
 }
 
-// ANSI colors for cloud API logs
-const CYAN = "\x1b[36m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
-const GREEN = "\x1b[32m";
-const MAGENTA = "\x1b[35m";
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
+export interface ReviewIntentOutcome {
+  intent: IntentResult | null;
+  review: ReviewResult;
+}
 
 function summarizeRawResponse(text: string, limit = 500): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -112,15 +109,19 @@ function extractReviewJson(text: string): Record<string, unknown> | null {
 
 /**
  * Two-stage review of an IntentResult using a large model.
- * Returns refined IntentResult, or null if review fails and failOpen is false.
+ * Returns refined IntentResult with structured review metadata.
  */
 export async function reviewIntent(
   provider: LlmProvider,
   intent: IntentResult,
   context?: ReviewContext
-): Promise<IntentResult | null> {
+): Promise<ReviewIntentOutcome> {
+  const stages: ReviewResult["stages"] = [];
+
   // Stage 1: Validate actionable/noteworthy
   const stage1ResultIntent: IntentResult = { ...intent };
+  const stage1Start = Date.now();
+
   try {
     let input1 = `Content: ${intent.content}`;
     input1 += `\nActionable: ${intent.actionable}`;
@@ -135,8 +136,8 @@ export async function reviewIntent(
       }
     }
 
-    console.log(`${BOLD}${CYAN}[review] ☁️  CLOUD API CALL — stage 1: intent validation${RESET}`);
-    console.log(`${CYAN}[review] → sending to cloud: "${intent.content.substring(0, 80)}"${RESET}`);
+    debugLog(`[review] stage1 input: "${intent.content.substring(0, 80)}"`);
+
     const response1 = await provider.chat(
       [
         { role: "system", content: INTENT_VALIDATION_PROMPT },
@@ -155,28 +156,36 @@ export async function reviewIntent(
         : intent.noteworthy;
       stage1ResultIntent.actionable = reviewedActionable;
       stage1ResultIntent.noteworthy = reviewedNoteworthy;
-      console.log(
-        `${GREEN}[review] ✓ stage 1: actionable=${reviewedActionable}, noteworthy=${reviewedNoteworthy} (${result1.reason || "ok"})${RESET}`
-      );
     } else {
-      console.log(`${YELLOW}[review] stage 1 returned non-JSON, keep original flags${RESET}`);
-      console.log(`${YELLOW}[review] stage 1 raw response: "${summarizeRawResponse(response1)}"${RESET}`);
+      debugLog(`[review] stage1 non-json: "${summarizeRawResponse(response1)}"`);
     }
 
+    const stage1Latency = Date.now() - stage1Start;
+    stages.push({
+      stage: 1,
+      latencyMs: stage1Latency,
+      outcome: `actionable=${stage1ResultIntent.actionable} noteworthy=${stage1ResultIntent.noteworthy}`,
+    });
+
     if (!stage1ResultIntent.actionable && !stage1ResultIntent.noteworthy) {
-      console.log(`${RED}[review] ✗ stage 1 rejected both actionable/noteworthy${RESET}`);
-      return stage1ResultIntent;
+      return {
+        intent: stage1ResultIntent,
+        review: {
+          stages,
+          rejected: true,
+        },
+      };
     }
   } catch (err) {
-    console.error(`${RED}[review] stage 1 error:${RESET}`, err);
+    debugError("[review] stage1 error:", err);
     throw err;
   }
 
   // Stage 2: Refine content
+  const stage2Start = Date.now();
+
   try {
     const lang = context?.language || "zh-CN";
-    console.log(`${BOLD}${MAGENTA}[review] ☁️  CLOUD API CALL — stage 2: content refinement (${lang})${RESET}`);
-    console.log(`${MAGENTA}[review] → sending to cloud: "${stage1ResultIntent.content.substring(0, 80)}"${RESET}`);
     const now = new Date();
     const isoNow = now.toISOString().slice(0, 16);
     let input2 = `Target output language (strict): ${lang}`;
@@ -190,6 +199,8 @@ export async function reviewIntent(
       input2 += `\nOCR snippet: ${context.textSnippet}`;
     }
 
+    debugLog(`[review] stage2 input (${lang}): "${stage1ResultIntent.content.substring(0, 80)}"`);
+
     const response2 = await provider.chat(
       [
         { role: "system", content: buildQualityPrompt(lang) },
@@ -199,15 +210,41 @@ export async function reviewIntent(
     );
 
     const result2 = extractReviewJson(response2);
+    const stage2Latency = Date.now() - stage2Start;
+
     if (result2 && result2.approved === false) {
-      console.log(`${RED}[review] ✗ stage 2 REJECTED: ${result2.reason}${RESET}`);
-      return { ...stage1ResultIntent, actionable: false, noteworthy: false };
+      const reason = typeof result2.reason === "string" && result2.reason.trim().length > 0
+        ? result2.reason.trim()
+        : "rejected";
+      stages.push({
+        stage: 2,
+        latencyMs: stage2Latency,
+        outcome: `rejected (${reason})`,
+      });
+      return {
+        intent: { ...stage1ResultIntent, actionable: false, noteworthy: false },
+        review: {
+          stages,
+          rejected: true,
+        },
+      };
     }
 
     if (!result2) {
-      console.log(`${YELLOW}[review] stage 2 returned non-JSON, keep stage 1 result${RESET}`);
-      console.log(`${YELLOW}[review] stage 2 raw response: "${summarizeRawResponse(response2)}"${RESET}`);
-      return stage1ResultIntent;
+      debugLog(`[review] stage2 non-json: "${summarizeRawResponse(response2)}"`);
+      stages.push({
+        stage: 2,
+        latencyMs: stage2Latency,
+        outcome: "fallback keep stage1",
+      });
+      return {
+        intent: stage1ResultIntent,
+        review: {
+          stages,
+          finalContent: stage1ResultIntent.content,
+          finalDueTime: stage1ResultIntent.due_time,
+        },
+      };
     }
 
     const refinedContent = typeof result2.refined_content === "string"
@@ -230,26 +267,18 @@ export async function reviewIntent(
 
     const changed: string[] = [];
     if (refinedContent !== stage1ResultIntent.content) changed.push("content");
-    if (refinedDueTime !== stage1ResultIntent.due_time) {
-      changed.push(`due:${stage1ResultIntent.due_time}→${refinedDueTime}`);
-    }
-    if (refinedUrgent !== stage1ResultIntent.urgent) {
-      changed.push(`urgent:${stage1ResultIntent.urgent}→${refinedUrgent}`);
-    }
-    if (refinedActionable !== stage1ResultIntent.actionable) {
-      changed.push(`actionable:${stage1ResultIntent.actionable}→${refinedActionable}`);
-    }
-    if (refinedNoteworthy !== stage1ResultIntent.noteworthy) {
-      changed.push(`noteworthy:${stage1ResultIntent.noteworthy}→${refinedNoteworthy}`);
-    }
+    if (refinedDueTime !== stage1ResultIntent.due_time) changed.push("due");
+    if (refinedUrgent !== stage1ResultIntent.urgent) changed.push("urgent");
+    if (refinedActionable !== stage1ResultIntent.actionable) changed.push("actionable");
+    if (refinedNoteworthy !== stage1ResultIntent.noteworthy) changed.push("noteworthy");
 
-    if (changed.length > 0) {
-      console.log(`${YELLOW}[review] ✎ refined [${changed.join(", ")}]: "${refinedContent.substring(0, 40)}"${RESET}`);
-    } else {
-      console.log(`${GREEN}[review] ✓ stage 2 passed (no changes): ${result2.reason || "ok"}${RESET}`);
-    }
+    stages.push({
+      stage: 2,
+      latencyMs: stage2Latency,
+      outcome: changed.length > 0 ? `refined ${changed.join("+")}` : "no changes",
+    });
 
-    return {
+    const refinedIntent: IntentResult = {
       ...stage1ResultIntent,
       content: refinedContent,
       due_time: refinedDueTime,
@@ -257,8 +286,18 @@ export async function reviewIntent(
       actionable: refinedActionable,
       noteworthy: refinedNoteworthy,
     };
+
+    return {
+      intent: refinedIntent,
+      review: {
+        stages,
+        finalContent: refinedIntent.content,
+        finalDueTime: refinedIntent.due_time,
+        rejected: !refinedIntent.actionable && !refinedIntent.noteworthy,
+      },
+    };
   } catch (err) {
-    console.error(`${RED}[review] stage 2 error:${RESET}`, err);
+    debugError("[review] stage2 error:", err);
     throw err;
   }
 }

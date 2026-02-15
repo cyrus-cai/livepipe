@@ -1,10 +1,8 @@
 import { pipe } from "@screenpipe/js";
 import { detectIntent } from "@/lib/intent-detector";
 import {
-  shouldNotify,
-  shouldProcessActionable,
-  shouldProcessNoteworthy,
-  shouldSyncNoteworthy,
+  checkActionableDedup,
+  checkNoteworthyDedup,
   recordAndNotify,
   recordNoteworthy,
   loadTasksFromFile,
@@ -16,6 +14,7 @@ import { reviewIntent, type ReviewContext } from "@/lib/review";
 import { createGeminiProvider } from "@/lib/providers/gemini";
 import type { LlmProvider } from "@/lib/llm-provider";
 import type { IntentResult } from "@/lib/schemas";
+import { PipelineLogger, debugError, debugLog, type NotifyResult } from "@/lib/pipeline-logger";
 import {
   type CaptureConfig,
   type FilterConfig,
@@ -38,6 +37,8 @@ let isRunning = false;
 let lastText = "";
 let noDataCount = 0;
 let isFirstPoll = true;
+let pollSeq = 0;
+let hotkeySeq = 0;
 
 const LOG_DIR = join(process.cwd(), "logs");
 const LOG_FILE = join(LOG_DIR, "screenpipe-raw.jsonl");
@@ -145,42 +146,95 @@ function getReviewProvider(): LlmProvider | null {
  * actionable=true: dedup → review(optional) → reminders+notify
  * noteworthy=true: dedup → review(optional) → apple notes
  */
-async function processIntent(intent: IntentResult, context?: ReviewContext): Promise<void> {
+function mergeNotifySummary(target: NotifyResult, extra: NotifyResult): void {
+  target.desktop = target.desktop || extra.desktop;
+
+  for (const webhook of extra.webhooks) {
+    if (!target.webhooks.includes(webhook)) {
+      target.webhooks.push(webhook);
+    }
+  }
+
+  target.remindersSynced = target.remindersSynced || extra.remindersSynced;
+  target.notesSynced = target.notesSynced || extra.notesSynced;
+
+  for (const err of extra.errors) {
+    target.errors.push(err);
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function processIntent(
+  intent: IntentResult,
+  logger: PipelineLogger,
+  context?: ReviewContext,
+): Promise<void> {
   if (!intent.actionable && !intent.noteworthy) {
-    console.log("[poll] neither actionable nor noteworthy");
+    logger.intentSkip("neither actionable nor noteworthy");
     return;
   }
 
   const sourceApp = context?.sourceApp || "unknown";
   const provider = getReviewProvider();
+  const notifySummary: NotifyResult = {
+    desktop: false,
+    webhooks: [],
+    errors: [],
+  };
 
-  if (!provider) {
-    // Review not enabled — direct dedup + output
-    if (intent.actionable) {
-      if (shouldNotify(intent)) {
-        console.log(`[poll] ACTIONABLE: urgent=${intent.urgent}, content="${intent.content}", due=${intent.due_time}`);
-        await sendNotification(intent);
-      } else {
-        console.log("[poll] actionable duplicate, skipped");
-      }
-    }
+  const actionableDedup = intent.actionable ? checkActionableDedup(intent) : null;
+  const noteworthyDedup = intent.noteworthy ? checkNoteworthyDedup(intent) : null;
 
-    if (intent.noteworthy) {
-      if (shouldSyncNoteworthy(intent, sourceApp)) {
-        console.log(`[poll] NOTEWORTHY: content="${intent.content}"`);
-      } else {
-        console.log("[poll] noteworthy duplicate, skipped");
-      }
-    }
+  const primaryDedup = actionableDedup?.passed
+    ? actionableDedup
+    : noteworthyDedup?.passed
+      ? noteworthyDedup
+      : actionableDedup ?? noteworthyDedup;
+  if (primaryDedup) {
+    logger.dedup(primaryDedup);
+  }
+
+  if (actionableDedup && noteworthyDedup) {
+    const secondaryLabel = primaryDedup === actionableDedup ? "noteworthy" : "actionable";
+    const secondary = primaryDedup === actionableDedup ? noteworthyDedup : actionableDedup;
+    const secondaryStatus = secondary.passed
+      ? `✓ passed (${secondary.cacheSize ?? "?"} entries)`
+      : `✗ duplicate (${secondary.similarity != null ? `${(secondary.similarity * 100).toFixed(0)}% match` : secondary.reason})`;
+    logger.info(`③ DEDUP   ${secondaryLabel} ${secondaryStatus}`);
+  }
+
+  const actionableCandidate = actionableDedup?.passed ?? false;
+  const noteworthyCandidate = noteworthyDedup?.passed ?? false;
+
+  if (!actionableCandidate && !noteworthyCandidate) {
     return;
   }
 
-  // Review enabled — dedup each path independently before review
-  const actionableCandidate = intent.actionable ? shouldProcessActionable(intent) : false;
-  const noteworthyCandidate = intent.noteworthy ? shouldProcessNoteworthy(intent) : false;
+  if (!provider) {
+    logger.reviewSkipped();
 
-  if (!actionableCandidate && !noteworthyCandidate) {
-    console.log("[poll] duplicate on both paths, skipped review");
+    if (actionableCandidate) {
+      const record = await recordAndNotify(intent);
+      notifySummary.remindersSynced = record.remindersSynced;
+      if (record.reminderError) {
+        notifySummary.errors.push(`reminders: ${record.reminderError}`);
+      }
+      const delivery = await sendNotification(intent);
+      mergeNotifySummary(notifySummary, delivery);
+    }
+
+    if (noteworthyCandidate) {
+      const note = await recordNoteworthy(intent, sourceApp);
+      notifySummary.notesSynced = note.notesSynced;
+      if (note.notesError) {
+        notifySummary.errors.push(`notes: ${note.notesError}`);
+      }
+    }
+
+    logger.notify(notifySummary);
     return;
   }
 
@@ -191,33 +245,63 @@ async function processIntent(intent: IntentResult, context?: ReviewContext): Pro
   };
 
   try {
-    const reviewed = await reviewIntent(provider, reviewInput, context);
+    const reviewedOutcome = await reviewIntent(provider, reviewInput, context);
+    logger.review(reviewedOutcome.review);
+
+    const reviewed = reviewedOutcome.intent;
     if (!reviewed || (!reviewed.actionable && !reviewed.noteworthy)) {
-      console.log("[poll] review rejected");
       return;
     }
 
     if (reviewed.actionable) {
-      recordAndNotify(reviewed);
-      console.log(`[poll] REVIEWED & ACTIONABLE: urgent=${reviewed.urgent}, content="${reviewed.content}", due=${reviewed.due_time}`);
-      await sendNotification(reviewed);
+      const record = await recordAndNotify(reviewed);
+      notifySummary.remindersSynced = record.remindersSynced;
+      if (record.reminderError) {
+        notifySummary.errors.push(`reminders: ${record.reminderError}`);
+      }
+      const delivery = await sendNotification(reviewed);
+      mergeNotifySummary(notifySummary, delivery);
     }
+
     if (reviewed.noteworthy) {
-      recordNoteworthy(reviewed, sourceApp);
-      console.log(`[poll] REVIEWED & NOTEWORTHY: content="${reviewed.content}"`);
-    }
-  } catch (err) {
-    console.error("[poll] review error:", err);
-    if (reviewConfig.failOpen) {
-      console.log("[poll] failOpen: passing through without review");
-      if (reviewInput.actionable) {
-        recordAndNotify(reviewInput);
-        await sendNotification(reviewInput);
-      }
-      if (reviewInput.noteworthy) {
-        recordNoteworthy(reviewInput, sourceApp);
+      const note = await recordNoteworthy(reviewed, sourceApp);
+      notifySummary.notesSynced = note.notesSynced;
+      if (note.notesError) {
+        notifySummary.errors.push(`notes: ${note.notesError}`);
       }
     }
+
+    logger.notify(notifySummary);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    debugError("[poll] review error:", error);
+    logger.info(`④ REVIEW  error: ${message}`);
+
+    if (!reviewConfig.failOpen) {
+      return;
+    }
+
+    logger.info("④ REVIEW  failOpen: pass-through");
+
+    if (reviewInput.actionable) {
+      const record = await recordAndNotify(reviewInput);
+      notifySummary.remindersSynced = record.remindersSynced;
+      if (record.reminderError) {
+        notifySummary.errors.push(`reminders: ${record.reminderError}`);
+      }
+      const delivery = await sendNotification(reviewInput);
+      mergeNotifySummary(notifySummary, delivery);
+    }
+
+    if (reviewInput.noteworthy) {
+      const note = await recordNoteworthy(reviewInput, sourceApp);
+      notifySummary.notesSynced = note.notesSynced;
+      if (note.notesError) {
+        notifySummary.errors.push(`notes: ${note.notesError}`);
+      }
+    }
+
+    logger.notify(notifySummary);
   }
 }
 
@@ -317,21 +401,29 @@ function changeRatio(a: string, b: string): number {
 
 const MIN_CHANGE_RATIO = 0.15;
 
-function detectChange(newText: string): string | null {
+type ChangeDecision = {
+  changedText: string | null;
+  ratio: number;
+  reason: "empty" | "same" | "below-threshold" | "changed";
+};
+
+function detectChange(newText: string): ChangeDecision {
   const trimmed = newText.trim();
-  if (!trimmed) return null;
-  if (trimmed === lastText) return null;
+  if (!trimmed) {
+    return { changedText: null, ratio: 0, reason: "empty" };
+  }
+  if (trimmed === lastText) {
+    return { changedText: null, ratio: 0, reason: "same" };
+  }
 
   const ratio = changeRatio(lastText, trimmed);
   if (ratio < MIN_CHANGE_RATIO) {
-    console.log(`[poll] change ${(ratio * 100).toFixed(0)}% < ${MIN_CHANGE_RATIO * 100}% threshold, skip`);
     lastText = trimmed;
-    return null;
+    return { changedText: null, ratio, reason: "below-threshold" };
   }
 
-  console.log(`[poll] change ${(ratio * 100).toFixed(0)}%, ${trimmed.length} chars`);
   lastText = trimmed;
-  return trimmed;
+  return { changedText: trimmed, ratio, reason: "changed" };
 }
 
 async function detectScreenpipeInterval(): Promise<number> {
@@ -391,7 +483,18 @@ async function detectScreenpipeInterval(): Promise<number> {
 /**
  * Fetch OCR data, filter, and return texts+apps. Shared by polling loop and triggerOnce.
  */
-async function fetchAndFilter(lookbackMs: number): Promise<{ texts: string[]; apps: Set<string> } | null> {
+type FetchAndFilterResult = {
+  texts: string[];
+  apps: Set<string>;
+  totalItems: number;
+  skippedApp: number;
+  skippedWindow: number;
+  skippedShort: number;
+  skippedDedup: number;
+  chars: number;
+};
+
+async function fetchAndFilter(lookbackMs: number): Promise<FetchAndFilterResult> {
   const now = Date.now();
   const startTime = new Date(now - lookbackMs).toISOString();
   const endTime = new Date(now).toISOString();
@@ -402,22 +505,20 @@ async function fetchAndFilter(lookbackMs: number): Promise<{ texts: string[]; ap
     startTime,
     endTime,
   };
-  console.log(`[query] pipe.queryScreenpipe(${JSON.stringify(query, null, 2)})`);
+  debugLog(`[query] pipe.queryScreenpipe(${JSON.stringify(query)})`);
 
   const result = await pipe.queryScreenpipe(query);
 
-  console.log(`[query] response: ${result?.data?.length ?? 0} items, pagination=${JSON.stringify(result?.pagination)}`);
+  debugLog(`[query] response: ${result?.data?.length ?? 0} items, pagination=${JSON.stringify(result?.pagination)}`);
 
   appendLog({ query, response: result });
 
-  if (!result?.data?.length) {
-    return null;
-  }
+  const totalItems = result?.data?.length ?? 0;
 
   const candidates: { text: string; app: string }[] = [];
   let skippedApp = 0, skippedWindow = 0, skippedShort = 0;
 
-  for (const item of result.data) {
+  for (const item of result?.data ?? []) {
     if (item.type !== "OCR") continue;
     const text = item.content.text;
     const app = item.content.appName ?? "unknown";
@@ -435,11 +536,19 @@ async function fetchAndFilter(lookbackMs: number): Promise<{ texts: string[]; ap
   const unique = deduplicateTexts(candidates);
   const texts = unique.map(e => e.text);
   const apps = new Set(unique.map(e => e.app));
+  const skippedDedup = candidates.length - unique.length;
+  const chars = texts.reduce((sum, text) => sum + text.length, 0);
 
-  console.log(`[poll] fetched ${result.data.length} items → ${texts.length} kept (app:−${skippedApp} window:−${skippedWindow} short:−${skippedShort} dedup:−${candidates.length - unique.length}), apps=[${[...apps].join(", ")}]`);
-
-  if (texts.length === 0) return null;
-  return { texts, apps };
+  return {
+    texts,
+    apps,
+    totalItems,
+    skippedApp,
+    skippedWindow,
+    skippedShort,
+    skippedDedup,
+    chars,
+  };
 }
 
 /**
@@ -447,7 +556,8 @@ async function fetchAndFilter(lookbackMs: number): Promise<{ texts: string[]; ap
  * Grabs the latest Screenpipe OCR frame directly — no time window needed.
  */
 export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any }> {
-  console.log("[trigger] hotkey-triggered capture starting...");
+  const logger = new PipelineLogger("hotkey", ++hotkeySeq);
+  debugLog("[trigger] hotkey-triggered capture starting...");
 
   try {
     // Grab the most recent OCR data — Screenpipe runs at 0.5 FPS so there's always a recent frame
@@ -457,36 +567,61 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
       startTime: new Date(Date.now() - 300_000).toISOString(), // last 5 min as safety net
       endTime: new Date().toISOString(),
     };
-    console.log(`[trigger] querying latest OCR frames...`);
+    debugLog("[trigger] querying latest OCR frames...");
     const result = await pipe.queryScreenpipe(query);
 
     if (!result?.data?.length) {
-      console.log("[trigger] no OCR data available from Screenpipe");
+      logger.skip("no data");
       return { triggered: false };
     }
 
     // Filter and deduplicate
     const candidates: { text: string; app: string }[] = [];
+    let skippedApp = 0;
+    let skippedWindow = 0;
+    let skippedShort = 0;
+
     for (const item of result.data) {
       if (item.type !== "OCR") continue;
       const text = item.content.text;
       const app = item.content.appName ?? "unknown";
       const windowName = item.content.windowName ?? "";
-      if (!text || text.length < filterConfig.minTextLength) continue;
-      if (!isAppAllowed(app)) continue;
-      if (isWindowBlocked(windowName)) continue;
+      if (!text || text.length < filterConfig.minTextLength) {
+        skippedShort++;
+        continue;
+      }
+      if (!isAppAllowed(app)) {
+        skippedApp++;
+        continue;
+      }
+      if (isWindowBlocked(windowName)) {
+        skippedWindow++;
+        continue;
+      }
       candidates.push({ text, app });
     }
 
     const unique = deduplicateTexts(candidates);
-    if (unique.length === 0) {
-      console.log(`[trigger] ${result.data.length} frames fetched but all filtered out`);
-      return { triggered: false };
-    }
-
     const texts = unique.map(e => e.text);
     const apps = new Set(unique.map(e => e.app));
-    console.log(`[trigger] got ${texts.length} texts from [${[...apps].join(", ")}]`);
+    const chars = texts.reduce((sum, text) => sum + text.length, 0);
+
+    logger.fetch({
+      totalItems: result.data.length,
+      keptItems: texts.length,
+      apps: [...apps],
+      chars,
+      skippedApp,
+      skippedWindow,
+      skippedShort,
+      skippedDedup: candidates.length - unique.length,
+    });
+
+    if (unique.length === 0) {
+      logger.info("② FETCH   all items filtered — skipped");
+      logger.flush();
+      return { triggered: false };
+    }
 
     const batch = {
       texts,
@@ -498,9 +633,19 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
     const intent = await detectIntent(batch, { hotkeyTriggered: true });
 
     if (!intent) {
-      console.log("[trigger] intent detection returned null");
+      logger.intentSkip("detector failed");
+      logger.flush();
       return { triggered: true };
     }
+
+    logger.intent({
+      actionable: intent.actionable,
+      noteworthy: intent.noteworthy,
+      urgent: intent.urgent,
+      content: intent.content,
+      dueTime: intent.due_time,
+      latencyMs: intent.latencyMs,
+    });
 
     if (intent.actionable || intent.noteworthy) {
       const reviewCtx: ReviewContext = {
@@ -509,14 +654,17 @@ export async function triggerOnce(): Promise<{ triggered: boolean; intent?: any 
         textSnippet: extractSnippet(texts, intent.content),
         language: outputLanguage,
       };
-      await processIntent(intent, reviewCtx);
+      await processIntent(intent, logger, reviewCtx);
     } else {
-      console.log("[trigger] neither actionable nor noteworthy");
+      logger.intentSkip("neither actionable nor noteworthy");
     }
 
+    logger.flush();
     return { triggered: true, intent };
   } catch (error) {
-    console.error("[trigger] error:", error);
+    logger.info(`error: ${getErrorMessage(error)}`);
+    logger.flush();
+    debugError("[trigger] error:", error);
     return { triggered: false };
   }
 }
@@ -547,17 +695,36 @@ async function runPipeline() {
 
   try {
     while (true) {
+      const logger = new PipelineLogger("poll", ++pollSeq);
+
       try {
         const data = await fetchAndFilter(LOOKBACK_MS);
 
-        if (!data) {
+        if (data.totalItems === 0) {
           noDataCount++;
-          console.log(`[poll] no OCR data in last ${LOOKBACK_MS / 1000}s (×${noDataCount})`);
+          logger.skip(`no data (×${noDataCount})`);
           await sleep(POLL_INTERVAL_MS);
           continue;
         }
 
         noDataCount = 0;
+        logger.fetch({
+          totalItems: data.totalItems,
+          keptItems: data.texts.length,
+          apps: [...data.apps],
+          chars: data.chars,
+          skippedApp: data.skippedApp,
+          skippedWindow: data.skippedWindow,
+          skippedShort: data.skippedShort,
+          skippedDedup: data.skippedDedup,
+        });
+
+        if (data.texts.length === 0) {
+          logger.info("② FETCH   all items filtered — skipped");
+          logger.flush();
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
 
         const combined = data.texts.join("\n");
 
@@ -565,14 +732,22 @@ async function runPipeline() {
         if (isFirstPoll) {
           isFirstPoll = false;
           lastText = combined.trim();
-          console.log(`[poll] first poll — set baseline (${lastText.length} chars), skipping`);
+          logger.info(`② BASELINE first poll — set baseline (${lastText.length} chars), skipped`);
+          logger.flush();
           await sleep(POLL_INTERVAL_MS);
           continue;
         }
 
-        const changed = detectChange(combined);
-
-        if (!changed) {
+        const change = detectChange(combined);
+        if (!change.changedText) {
+          if (change.reason === "below-threshold") {
+            logger.noChange(change.ratio);
+            logger.flush();
+          } else if (change.reason === "same") {
+            logger.skip("no change");
+          } else {
+            logger.skip("empty text");
+          }
           await sleep(POLL_INTERVAL_MS);
           continue;
         }
@@ -587,20 +762,35 @@ async function runPipeline() {
         const intent = await detectIntent(batch);
 
         if (!intent) {
-          console.log("[poll] intent detection returned null");
-        } else if (intent.actionable || intent.noteworthy) {
-          const reviewCtx: ReviewContext = {
-            sourceApp: [...data.apps].join(", "),
-            trigger: "poll",
-            textSnippet: extractSnippet(data.texts, intent.content),
-            language: outputLanguage,
-          };
-          await processIntent(intent, reviewCtx);
+          logger.intentSkip("detector failed");
+          logger.flush();
         } else {
-          console.log("[poll] neither actionable nor noteworthy");
+          logger.intent({
+            actionable: intent.actionable,
+            noteworthy: intent.noteworthy,
+            urgent: intent.urgent,
+            content: intent.content,
+            dueTime: intent.due_time,
+            latencyMs: intent.latencyMs,
+          });
+
+          if (intent.actionable || intent.noteworthy) {
+            const reviewCtx: ReviewContext = {
+              sourceApp: [...data.apps].join(", "),
+              trigger: "poll",
+              textSnippet: extractSnippet(data.texts, intent.content),
+              language: outputLanguage,
+            };
+            await processIntent(intent, logger, reviewCtx);
+          } else {
+            logger.intentSkip("neither actionable nor noteworthy");
+          }
+          logger.flush();
         }
       } catch (error) {
-        console.error("[poll] error:", error);
+        logger.info(`error: ${getErrorMessage(error)}`);
+        logger.flush();
+        debugError("[poll] error:", error);
       }
 
       await sleep(POLL_INTERVAL_MS);
