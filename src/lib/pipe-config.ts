@@ -21,6 +21,12 @@ export interface CaptureConfig {
   timestampSkewToleranceMs: number;
 }
 
+export interface ClipboardConfig {
+  enabled: boolean;
+  pollIntervalMs: number;
+  minTextLength: number;
+}
+
 export interface ReviewConfig {
   enabled: boolean;
   provider: string;
@@ -61,6 +67,7 @@ export interface DedupConfig {
 export interface PipeConfig {
   filter: FilterConfig;
   capture: CaptureConfig;
+  clipboard: ClipboardConfig;
   review: ReviewConfig;
   outputLanguage: string;
   notification: NotificationConfig;
@@ -115,6 +122,12 @@ const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
   model: "",
   apiKey: "",
   failOpen: true,
+};
+
+const DEFAULT_CLIPBOARD_CONFIG: ClipboardConfig = {
+  enabled: false,
+  pollIntervalMs: 3000,
+  minTextLength: 10,
 };
 
 const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
@@ -192,6 +205,21 @@ const pipeConfigSchema = z
           .int("must be an integer")
           .min(0, "must be >= 0"),
       }),
+    clipboard: z
+      .object({
+        enabled: z.boolean().default(DEFAULT_CLIPBOARD_CONFIG.enabled),
+        pollIntervalMs: z
+          .number()
+          .int("must be an integer")
+          .min(1000, "must be >= 1000")
+          .default(DEFAULT_CLIPBOARD_CONFIG.pollIntervalMs),
+        minTextLength: z
+          .number()
+          .int("must be an integer")
+          .min(1, "must be >= 1")
+          .default(DEFAULT_CLIPBOARD_CONFIG.minTextLength),
+      })
+      .default(DEFAULT_CLIPBOARD_CONFIG),
     review: z
       .object({
         enabled: z.boolean().default(DEFAULT_REVIEW_CONFIG.enabled),
@@ -277,6 +305,9 @@ const HOT_RELOAD_FIELDS = new Set([
   "capture.pollIntervalMs",
   "capture.lookbackMs",
   "capture.timestampSkewToleranceMs",
+  "clipboard.enabled",
+  "clipboard.pollIntervalMs",
+  "clipboard.minTextLength",
   "review.enabled",
   "review.provider",
   "review.model",
@@ -352,6 +383,9 @@ function getComparableFields(config: PipeConfig): Record<string, unknown> {
     "capture.pollIntervalMs": config.capture.pollIntervalMs,
     "capture.lookbackMs": config.capture.lookbackMs,
     "capture.timestampSkewToleranceMs": config.capture.timestampSkewToleranceMs,
+    "clipboard.enabled": config.clipboard.enabled,
+    "clipboard.pollIntervalMs": config.clipboard.pollIntervalMs,
+    "clipboard.minTextLength": config.clipboard.minTextLength,
     "review.enabled": config.review.enabled,
     "review.provider": config.review.provider,
     "review.model": config.review.model,

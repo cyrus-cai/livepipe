@@ -9,8 +9,8 @@ import { debugError, debugLog, type ReviewResult } from "./pipeline-logger";
 export interface ReviewContext {
   /** App that produced the OCR text, e.g. "chrome", "slack" */
   sourceApp: string;
-  /** "poll" = automatic background capture, "hotkey" = user pressed hotkey */
-  trigger: "poll" | "hotkey";
+  /** "poll" = OCR polling, "hotkey" = user trigger, "clipboard" = clipboard polling */
+  trigger: "poll" | "hotkey" | "clipboard";
   /** Short snippet (~120 chars) of original OCR around the relevant content */
   textSnippet: string;
   /** Target language for the refined output, e.g. "zh-CN", "en", "ja" */
@@ -90,7 +90,7 @@ Validate two independent dimensions for extracted content:
 You will receive:
 - extracted content + due_time + urgent + current actionable/noteworthy flags
 - source app
-- trigger mode: poll/hotkey
+- trigger mode: poll/hotkey/clipboard
 - OCR snippet
 
 Validation rules:
@@ -98,6 +98,7 @@ Validation rules:
 - actionable=true for concrete user requests/commitments/meetings/deadlines/reply-required messages
 - noteworthy=false for noise, random fragments, pure UI text, ads, code, logs
 - noteworthy=true for decisions, valuable references, meaningful context worth revisiting
+- URL/link-only snippets should usually be noteworthy unless they are obvious ads/spam/noise
 - hotkey mode can be slightly more lenient, but still reject obvious junk
 
 Respond in JSON:
@@ -128,6 +129,7 @@ Goals:
    - actionable=true: use imperative/action-oriented sentence.
    - actionable=false and noteworthy=true: use declarative memo/information sentence.
    - actionable=true and noteworthy=true: keep action clear and include key memo context briefly.
+   - If content is primarily a URL/reference link, keep it as noteworthy unless clear ad/spam noise.
 4. Correct due_time:
    - Extract missing time from OCR if present.
    - Fix wrong time, normalize to ISO "YYYY-MM-DDTHH:mm".

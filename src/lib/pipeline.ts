@@ -16,6 +16,11 @@ import type { LlmProvider } from "@/lib/llm-provider";
 import type { IntentResult } from "@/lib/schemas";
 import { PipelineLogger, debugError, debugLog, type NotifyResult } from "@/lib/pipeline-logger";
 import {
+  isClipboardMonitorRunning,
+  startClipboardMonitor,
+  stopClipboardMonitor,
+} from "@/lib/clipboard-monitor";
+import {
   type CaptureConfig,
   type FilterConfig,
   type PipeConfig,
@@ -106,6 +111,9 @@ function setupConfigWatcher(): void {
     const nextConfig = getPipeConfig();
     const resetReviewProvider = event.changedFields.some((path) => path.startsWith("review."));
     applyRuntimeConfig(nextConfig, { resetReviewProvider });
+    if (event.changedFields.some((path) => path.startsWith("clipboard."))) {
+      syncClipboardMonitor(nextConfig);
+    }
 
     if (event.hotReloaded.length > 0) {
       console.log(`[config] 已热加载: ${event.hotReloaded.join(", ")}`);
@@ -122,6 +130,23 @@ try {
 } catch (error) {
   logConfigValidationError(error);
   throw error;
+}
+
+function syncClipboardMonitor(config: PipeConfig): void {
+  if (config.clipboard.enabled) {
+    if (!isClipboardMonitorRunning()) {
+      console.log(
+        `[clipboard] enabled — poll every ${(config.clipboard.pollIntervalMs / 1000).toFixed(1)}s, minText=${config.clipboard.minTextLength}`
+      );
+    }
+    startClipboardMonitor({ processIntent });
+    return;
+  }
+
+  if (isClipboardMonitorRunning()) {
+    console.log("[clipboard] disabled — stopping monitor");
+    stopClipboardMonitor();
+  }
 }
 
 function getReviewProvider(): LlmProvider | null {
@@ -211,7 +236,7 @@ function getReviewFailureLog(error: unknown): {
   };
 }
 
-async function processIntent(
+export async function processIntent(
   intent: IntentResult,
   logger: PipelineLogger,
   context?: ReviewContext,
@@ -815,6 +840,7 @@ async function runPipeline() {
       await sleep(POLL_INTERVAL_MS);
     }
   } finally {
+    stopClipboardMonitor();
     isRunning = false;
     console.log("[pipeline] stopped");
   }
@@ -836,6 +862,7 @@ export function startPipeline() {
   } else {
     console.log("[pipeline] review disabled");
   }
+  syncClipboardMonitor(getPipeConfig());
   runPipeline().catch((err) =>
     console.error("[pipeline] unhandled error:", err)
   );

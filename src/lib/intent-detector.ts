@@ -27,6 +27,7 @@ Actionable rules:
 
 Noteworthy rules:
 - Should be true for decisions, useful facts, reference links/info worth reviewing later.
+- A standalone URL or URL-focused snippet should default to noteworthy=true unless it's obvious ad/spam noise.
 - Should be false for noise, generic slogans, UI text, ads, random fragments, code.
 - Can be true together with actionable.
 
@@ -61,6 +62,7 @@ Hotkey behavior:
 - Prefer capturing potentially useful intent instead of dropping.
 - Still reject obvious junk: pure UI labels, ads, random OCR gibberish, code logs.
 - actionable and noteworthy can both be true.
+- URL/link snippets are usually noteworthy unless they are obvious ad/spam noise.
 
 CRITICAL rules for "content":
 - Keep original wording and language.
@@ -127,6 +129,7 @@ const NOTEWORTHY_SIGNAL_PATTERNS = [
   /结论|决策|要点|纪要|复盘|根因|takeaway|decision|summary|root cause|postmortem/i,
   /参考|runbook|endpoint|wiki|文档|context|背景|链接|reference/i,
 ];
+const URL_SIGNAL_PATTERN = /\bhttps?:\/\/[^\s]+/i;
 
 const URGENT_PATTERNS = [
   /\b(asap|urgent|immediately|right now)\b/i,
@@ -144,7 +147,7 @@ function hasStandaloneCancellation(text: string): boolean {
   return canceled && !rescheduled;
 }
 
-function normalizeIntentResult(result: IntentResult): IntentResult {
+export function normalizeIntentResult(result: IntentResult): IntentResult {
   const normalizedContent = result.content.trim();
   if (!normalizedContent) {
     return { actionable: false, noteworthy: false, content: "", due_time: null, urgent: false };
@@ -164,7 +167,11 @@ function normalizeIntentResult(result: IntentResult): IntentResult {
     normalized.actionable = false;
   }
 
-  const hasNoteworthySignal = hasAnyPattern(normalizedContent, NOTEWORTHY_SIGNAL_PATTERNS);
+  const hasUrlSignal = URL_SIGNAL_PATTERN.test(normalizedContent);
+  const hasNoteworthySignal = hasUrlSignal || hasAnyPattern(normalizedContent, NOTEWORTHY_SIGNAL_PATTERNS);
+  if (!normalized.noteworthy && hasUrlSignal) {
+    normalized.noteworthy = true;
+  }
   if (normalized.noteworthy && !hasNoteworthySignal) {
     normalized.noteworthy = false;
   }

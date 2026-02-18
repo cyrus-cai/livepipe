@@ -47,6 +47,11 @@
     "lookbackMs": 24000,
     "timestampSkewToleranceMs": 2000
   },
+  "clipboard": {
+    "enabled": false,
+    "pollIntervalMs": 3000,
+    "minTextLength": 10
+  },
   "review": {
     "enabled": false,
     "provider": "gemini",

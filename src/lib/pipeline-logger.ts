@@ -83,19 +83,23 @@ const CYAN = "\x1b[36m";
 
 export class PipelineLogger {
   private mode: "poll" | "hotkey";
+  private pollSource: "screenpipe" | "clipboard";
   private seq: number;
   private lines: string[] = [];
   private startMs = Date.now();
   private flushed = false;
   private headerPrinted = false;
 
-  constructor(mode: "poll" | "hotkey", seq: number) {
+  constructor(mode: "poll" | "hotkey", seq: number, pollSource: "screenpipe" | "clipboard" = "screenpipe") {
     this.mode = mode;
     this.seq = seq;
+    this.pollSource = pollSource;
   }
 
   private getLabel(): string {
-    return this.mode === "poll" ? `POLL #${this.seq}` : `HOTKEY #${this.seq}`;
+    if (this.mode === "hotkey") return `HOTKEY #${this.seq}`;
+    const sourceLabel = this.pollSource === "clipboard" ? "CLIP" : "SCREENPIPE";
+    return `POLL #${this.seq} [${sourceLabel}]`;
   }
 
   private getHeaderLine(): string {
